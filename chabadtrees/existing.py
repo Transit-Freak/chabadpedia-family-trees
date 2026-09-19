@@ -62,6 +62,7 @@ def find_existing_trees(client: MediaWikiClient, config: dict) -> dict:
             if m:
                 row_widths.append(sum(1 for c in wt.split_top(m.group(1)) if "=" not in c))
         t["rows"], t["width"] = len(row_widths), (max(row_widths) if row_widths else 0)
+        t["wikitext"] = text[:30000]
         t["uses_templates"] = sorted({tpl["name"] for tpl in wt.find_templates(text, nested=True)
                                       if any(tpl["name"].startswith(x) for x in config["tree_templates"])})
     # דף נחשב עץ רק אם הוא באמת מכיל תבנית עץ, או שכותרתו "עץ משפחת...", או שהוא בקטגוריית העצים

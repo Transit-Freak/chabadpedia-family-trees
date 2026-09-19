@@ -119,11 +119,22 @@ def box_content(chart: Chart, bid: str, graph: dict, cfg: dict, with_refs: bool 
     if ref_texts:
         label += "".join(sanitize_ref(r) for r in ref_texts[:2])
     if node is not None and info["role"] == "member" and getattr(node, "extra_children", None):
-        names = [graph["persons"].get(c, {}).get("name") or c.lstrip("~").split("@", 1)[0] for c in node.extra_children]
+        names = []
+        for c in node.extra_children:
+            cp = graph["persons"].get(c, {})
+            nm = cp.get("name") or c.lstrip("~").split("@", 1)[0]
+            sps = [e["b"] if e["a"] == c else e["a"] for e in graph["edges"] if e["relation"] == "spouse" and c in (e["a"], e["b"]) and e["confidence"] >= 0.5]
+            if sps:
+                sp = graph["persons"].get(sps[0], {"name": sps[0], "title": None})
+                word = cfg["chart"].get("wife_of", "אשת") if cp.get("gender") == "f" else "בעל"
+                nm += f" ({word} {person_label(sp, cfg, years=False)})"
+            names.append(nm)
         word = "ילדים נוספים" if any(m.children for m in node.marriages) else "ילדים"
         label += f"<br /><small>{word}: " + ", ".join(names) + "</small>"
     if node is not None and info["role"] == "member" and node.truncated:
         label += "<br /><small>(יש צאצאים נוספים)</small>"
+    if node is not None and info["role"] == "member" and getattr(node, "note", ""):
+        label += f"<br /><small>{node.note}</small>"
     return label
 
 

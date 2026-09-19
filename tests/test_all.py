@@ -244,12 +244,20 @@ class TestPipelineWithMock(MockServerMixin, unittest.TestCase):
 
     def test_trees_and_links(self):
         trees = build_trees(self.graph, CFG)
-        self.assertEqual(len(trees), 1)
-        t = trees[0]
-        self.assertGreaterEqual(len(t["members_shown"]), 28)
+        main = [t for t in trees if t["kind"] != "branch"]
+        self.assertEqual(len(main), 1)
+        t = main[0]
+        branches = [b for b in trees if b["kind"] == "branch"]
+        self.assertTrue(branches, "משפחה גדולה מתפצלת לענפים")
+        for b in branches:
+            self.assertLessEqual(b["width"], CFG["max_tree_width"] + 8)
+            self.assertIn(f"[[תבנית:{b['title']}|", t["wikitext"] + "".join(x["wikitext"] for x in branches))
+        self.assertGreaterEqual(len(t["members_shown"]) + sum(len(b["members_shown"]) for b in branches), 28)
         self.assertIn("[[רבי שניאור זלמן מלאדי (אדמו\"ר הזקן)|רבי שניאור זלמן מלאדי]]", t["wikitext"])
         self.assertIn("<ref>", t["wikitext"])
-        self.assertIn("אשת [[רבי שמריהו גורארי']]", t["wikitext"])     # בת: בעלה בתוך הקופסה
+        self.assertGreaterEqual(len(t["members_shown"]), 6, "העץ הראשי לא מתרוקן כשכל המשפחה יורדת מבן אחד")
+        all_wiki = t["wikitext"] + "".join(b["wikitext"] for b in branches)
+        self.assertIn("אשת [[רבי שמריהו גורארי']]", all_wiki)     # בת: בעלה בתוך הקופסה
         self.assertNotIn("|y|", t["wikitext"])
         for line in t["wikitext"].split("\n"):
             if line.startswith("{{עץ משפחה|"):

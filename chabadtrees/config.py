@@ -81,7 +81,9 @@ DEFAULTS: dict = {
     },
     # --- בניית העצים ---
     "min_family_size": 4,
-    "max_tree_nodes": 70,
+    "max_tree_nodes": 45,            # בני משפחה בעץ אחד; מעבר לזה ענפים גדולים נכנסים לעצים נפרדים
+    "max_tree_width": 64,            # רוחב במרצפות – העצים הקיימים באתר הם עד ~63
+    "min_branch_size": 6,            # ענף עם לפחות כך וכך בני משפחה יכול להפוך לעץ נפרד ("צאצאי X")
     "min_confidence": 0.5,
     "expand_through_daughters": False,
     # --- חילוץ בעזרת מודל (אופציונלי) ---

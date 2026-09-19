@@ -18,7 +18,7 @@ from .api import ApiError, MediaWikiClient
 from .extract import Extractor, build_aliases
 from .persons import is_person_page
 from .graph import build_graph, parents_of, year_of
-from .layout import TreeBuilder, TreeNode, layout_forest, ancestor_chart
+from .layout import Marriage, TreeBuilder, TreeNode, layout_forest, ancestor_chart
 from .render import tree_page, ahnentafel_wikitext, chart_wikitext, slug
 
 log = logging.getLogger(__name__)
@@ -438,7 +438,8 @@ def build_trees(graph: dict, cfg: dict, only_label: str | None = None, root: str
             continue
         surnames = family_surnames(graph, spec)
         tb.bloodline_surnames = surnames
-        mi = married_in(graph, spec["members"], surnames, tb)
+        # "נכנס בנישואין" נבדק גם מול בני זוג בלי ערך (בת המשפחה שאין לה ערך) – אחרת חתן נחשב שורש
+        mi = married_in(graph, _with_unlinked_relatives(graph, spec["members"]), surnames, tb)
         tb.married_in = mi
         members = _with_unlinked_relatives(graph, spec["members"], exclude_parents_of=mi)
         # הורים (מקושרים) של מי שהתחתן לתוך המשפחה אינם חלק מהעץ
@@ -450,7 +451,8 @@ def build_trees(graph: dict, cfg: dict, only_label: str | None = None, root: str
         roots = choose_roots(graph, members, cfg, tb)
         if not roots:
             continue
-        budget = max_nodes
+        # בונים את העץ המלא (בתקציב גדול) ואז מפצלים ענפים גדולים לעצים נפרדים, כמו שהאתר עושה לבית רבי
+        budget = max(max_nodes * 8, 400)
         forest: list[TreeNode] = []
         for r in roots[:8]:
             if budget <= 1:
@@ -462,8 +464,116 @@ def build_trees(graph: dict, cfg: dict, only_label: str | None = None, root: str
         shown = {n.person for t in forest for n in t.all_nodes()}
         if len(shown) < 2:
             continue
-        out.append(_tree_record(graph, cfg, f"עץ {spec['label']}" if spec["label"].startswith("משפחת") else f"עץ משפחת {spec['label']}", forest, spec, existing))
+        title = f"עץ {spec['label']}" if spec["label"].startswith("משפחת") else f"עץ משפחת {spec['label']}"
+        for sub_title, sub_forest, parent_title in split_forest(graph, cfg, title, forest, max_nodes):
+            rec = _tree_record(graph, cfg, sub_title, sub_forest, spec, existing)
+            if parent_title:
+                rec["kind"], rec["parent_tree"] = "branch", parent_title
+            out.append(rec)
     return out
+
+
+def _subtree_size(node: TreeNode) -> int:
+    return sum(1 for _ in node.all_nodes())
+
+
+def split_forest(graph: dict, cfg: dict, title: str, forest: list[TreeNode], max_nodes: int) -> list[tuple[str, list[TreeNode], str | None]]:
+    """מפצל עץ שגדול או רחב מדי לעצים נפרדים: הענף הגדול ביותר (צאצאי X) הופך לעץ משלו, ובמקומו נשארת
+    קופסה של X עם קישור לעץ הענף. חוזרים עד שכל עץ עומד במגבלות (max_tree_nodes, max_tree_width) או שאין ענף
+    גדול מספיק לפיצול (min_branch_size). מחזיר [(כותרת, יער, כותרת העץ שממנו פוצל)]."""
+    max_width = cfg.get("max_tree_width", 64)
+    min_branch = cfg.get("min_branch_size", 6)
+    ccfg = cfg["chart"]
+
+    def disp(pid: str) -> str:
+        return graph["persons"].get(pid, {}).get("name") or wt.display_name(pid.split("@", 1)[0].lstrip("~"))
+
+    def fits(fr: list[TreeNode]) -> bool:
+        if sum(_subtree_size(t) for t in fr) > max_nodes:
+            return False
+        chart = layout_forest(fr, {}, spouse_style=ccfg.get("spouse_style", "inline"), root_spouse_boxes=ccfg.get("root_spouse_boxes", True))
+        return chart.width <= max_width
+
+    out: list[tuple[str, list[TreeNode], str | None]] = []
+    queue: list[tuple[str, list[TreeNode], str | None]] = [(title, forest, None)]
+    used_titles: set[str] = {title}
+    guard = 0
+    while queue and guard < 200:
+        guard += 1
+        t_title, fr, parent = queue.pop(0)
+        while not fits(fr):
+            # 1. כמה שורשים (ענפים/משפחות נפרדות באותו שם): השורש הגדול ביותר נשאר בעץ הראשי,
+            #    כל שורש אחר שגדול מספיק מקבל עץ משלו; שורשים קטנים נשארים
+            if len(fr) > 1:
+                others = sorted(fr[1:] if fr[0] is max(fr, key=_subtree_size) else [t for t in fr if t is not max(fr, key=_subtree_size)],
+                                key=_subtree_size, reverse=True)
+                movable = [t for t in others if _subtree_size(t) - 1 >= min_branch]
+                if movable:
+                    r = movable[0]
+                    fr.remove(r)
+                    branch_title = f"{t_title.split(' – ')[0]} – צאצאי {disp(r.person)}"
+                    k = 2
+                    while branch_title in used_titles:
+                        branch_title = f"{t_title.split(' – ')[0]} – צאצאי {disp(r.person)} ({k})"
+                        k += 1
+                    used_titles.add(branch_title)
+                    queue.append((branch_title, [r], t_title))
+                    continue
+            # 2. ענף גדול (לא שורש) – הופך לעץ נפרד; בוחרים את הגדול ביותר שמשאיר אחריו עץ ראשי משמעותי
+            #    (אחרת, כשכל המשפחה יורדת מבן אחד של השורש, העץ הראשי היה נשאר עם שתי קופסאות)
+            total = sum(_subtree_size(t) for t in fr)
+            cands = [n for t in fr for n in t.all_nodes()
+                     if n.depth >= 1 and _subtree_size(n) - 1 >= min_branch and total - (_subtree_size(n) - 1) >= min_branch + 2]
+            if not cands:
+                # 3. אין ענף לפיצול: ילדים בלי ערך שהם עלים נכנסים כטקסט לקופסת ההורה, מהדור העמוק ביותר
+                if not _fold_leaves(fr):
+                    break
+                continue
+            node = max(cands, key=_subtree_size)
+            branch_title = f"{t_title.split(' – ')[0]} – צאצאי {disp(node.person)}"
+            k = 2
+            while branch_title in used_titles:
+                branch_title = f"{t_title.split(' – ')[0]} – צאצאי {disp(node.person)} ({k})"
+                k += 1
+            used_titles.add(branch_title)
+            # שורש העץ החדש: אותו אדם, עם נישואיו וילדיו; בעץ המקורי נשארת קופסה בלי ילדים ועם קישור
+            root = TreeNode(person=node.person, marriages=node.marriages, depth=0, extra_children=node.extra_children, truncated=node.truncated)
+            _redepth(root, 0)
+            node.marriages = [Marriage(spouse=m.spouse) for m in node.marriages]
+            node.extra_children, node.truncated = [], False
+            node.note = f"[[תבנית:{branch_title}|צאצאיו – עץ נפרד]]"
+            queue.append((branch_title, [root], t_title))
+        out.append((t_title, fr, parent))
+    return out
+
+
+def _fold_leaves(forest: list[TreeNode]) -> bool:
+    """מקפל את הילדים בלי ערך שהם עלים (בלי ילדים) בדור העמוק ביותר לתוך extra_children של ההורה.
+    מחזיר False אם אין מה לקפל."""
+    nodes = [n for t in forest for n in t.all_nodes()]
+    deepest = max((n.depth for n in nodes), default=0)
+    for depth in range(deepest, 0, -1):
+        folded = False
+        for n in nodes:
+            for m in n.marriages:
+                keep = []
+                for c in m.children:
+                    if c.depth == depth and c.person.startswith("~") and not any(mm.children for mm in c.marriages):
+                        n.extra_children.append(c.person)
+                        folded = True
+                    else:
+                        keep.append(c)
+                m.children = keep
+        if folded:
+            return True
+    return False
+
+
+def _redepth(node: TreeNode, depth: int) -> None:
+    node.depth = depth
+    for m in node.marriages:
+        for c in m.children:
+            _redepth(c, depth + 1)
 
 
 def _tree_record(graph: dict, cfg: dict, title: str, forest: list[TreeNode], spec: dict, existing: dict | None = None) -> dict:
