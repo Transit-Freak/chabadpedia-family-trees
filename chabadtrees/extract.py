@@ -288,6 +288,7 @@ class Extractor:
         # שכבה 2: דפוסי משפט – בפתיח ובכל הקטעים (לא בתבניות)
         self.current_info = info
         body = wt.strip_templates(text)
+        self._gender_votes(body[:4000], info)      # מגדר הדף ידוע כבר במשפט הראשון
         tokenized, refs = wt.tokenize_refs(body)
         for sec_title, _level, sec_text in wt.sections(tokenized):
             in_family_section = bool(re.search(r"משפח|ילדי|צאצא|קרוב|הורי|נישוא|בני|בנות", sec_title))
@@ -454,7 +455,8 @@ class Extractor:
         if (in_family_section or list_context) and clean.lstrip().startswith(("*", "#")):
             self._from_list_line(title, clean, sentence, refs, add, sec_title, list_context)
 
-    _SPOUSE_LINK_RE = re.compile(r"(?<![א-ת])(?:אשת|אשתו של|רעיית|אלמנת|נישאה ל|נשואה ל|בעלה|בעלה של|נשוי ל|התחתן עם|התחתנה עם)\s*" + _idx(LINK_TPL, 9))
+    _SPOUSE_LINK_RE = re.compile(r"(?<![א-ת])(?:אשת|אשתו של|רעיית|אלמנת|נישאה ל|נשואה ל|בעלה|בעלה של|נשוי ל|התחתן עם|התחתנה עם)\s*"
+                                 r"(?:(?:" + _HON_ALT + r")\s+)*" + _idx(LINK_TPL, 9))
 
     def _from_list_line(self, title: str, line: str, raw: str, refs: list[str], add, sec_title: str, list_context: str = "") -> None:
         links = wt.wikilinks(line)
@@ -581,7 +583,7 @@ class Extractor:
             return None
         return "~" + name, False, gender, name
 
-    def subject_of(self, m: re.Match, page: str, chain_ok: bool = False) -> tuple[str, bool, str | None, str]:
+    def subject_of(self, m: re.Match, page: str, chain_ok: bool = False, word_gender: str | None = None) -> tuple[str, bool, str | None, str]:
         """הנושא של ביטוי קשר: הקישור/השם שלפניו אם הוא באמת נושא, אחרת נושא הערך.
 
         "[[X]], בנו של [[Y]]" → X. "היה חתנו של [[A]], בעלה של [[B]]" → A הוא מושא של הביטוי הקודם
@@ -593,6 +595,8 @@ class Extractor:
         if lm:
             pre = lm.group("pre")
             is_object = bool(_OBJECT_TAIL_RE.search(pre))
+            if is_object and word_gender and _gender_from_honorific(lm.group("hon") or "") == word_gender and self.page_gender_conflict(word_gender):
+                is_object = False      # "התחתן עם מרת [[X]], בתו של [[Y]]" – X היא הבת, לא הערך (שהוא גבר)
             target = wt.normalize_title(lm.group("t"))
             known = (not self.known) or target in self.known
             if (not is_object or chain_ok) and wt.is_content_link(target) and (known or lm.group("hon")) and not _looks_like_year(target):
@@ -635,7 +639,10 @@ class Extractor:
         if nm:
             name = self.unlinked_name(nm.group("n"), nm.group("hon") or "")
             pre = nm.group("pre")
-            if name and not _OBJECT_TAIL_RE.search(pre) and not (" " not in name and name.startswith("מ")):
+            is_object = bool(_OBJECT_TAIL_RE.search(pre))
+            if is_object and word_gender and _gender_from_honorific(nm.group("hon") or "") == word_gender and self.page_gender_conflict(word_gender):
+                is_object = False
+            if name and not is_object and not (" " not in name and name.startswith("מ")):
                 if name == page_disp or name in page_disp:
                     return page, True, None, page_disp
                 allow = not getattr(self, "_in_list", False)
@@ -746,9 +753,9 @@ def h_child_unlinked(self_, m, page, sentence):
 def h_child_of(self_, m, page, sentence):
     """X, בנו של Y [ושל Z] → Y (ו-Z) הורים של X."""
     out = []
-    subj = self_.subject_of(m, page, chain_ok=True)
     w = m.group("w")
     pg = "f" if w.startswith("בת") else "m"
+    subj = self_.subject_of(m, page, chain_ok=True, word_gender=pg)
     if subj[0] == page and self_.page_gender_conflict(pg):
         return []
     for n in (1, 2):
@@ -807,12 +814,12 @@ def h_parent_of(self_, m, page, sentence):
 
 
 def h_spouse_verb(self_, m, page, sentence):
-    subj = self_.subject_of(m, page)
+    w = m.group("w")
+    pg = "f" if w in ("נשואה", "נישאה", "התחתנה", "נשאה") else "m"
+    subj = self_.subject_of(m, page, word_gender=pg)
     rel = self_.person_from_match(m, 1)
     if not rel:
         return []
-    w = m.group("w")
-    pg = "f" if w in ("נשואה", "נישאה", "התחתנה", "נשאה") else "m"
     if subj[0] == page and self_.page_gender_conflict(pg):
         return []
     r = _mk(subj, rel, "spouse", m, self_, page, conf=0.85, person_gender=pg, relative_gender=("m" if pg == "f" else "f"))
@@ -831,12 +838,12 @@ def h_spouse_noun(self_, m, page, sentence):
 
 
 def h_spouse_of(self_, m, page, sentence):
-    subj = self_.subject_of(m, page)
+    w = m.group("w")
+    pg = "m" if w.startswith("בעל") else "f"
+    subj = self_.subject_of(m, page, word_gender=pg)
     rel = self_.person_from_match(m, 1)
     if not rel:
         return []
-    w = m.group("w")
-    pg = "m" if w.startswith("בעל") else "f"
     if subj[0] == page and self_.page_gender_conflict(pg):
         return []
     r = _mk(subj, rel, "spouse", m, self_, page, conf=0.8, person_gender=pg, relative_gender=("f" if pg == "m" else "m"))
@@ -851,10 +858,10 @@ def h_spouse_construct(self_, m, page, sentence):
 
 
 def h_sibling_of(self_, m, page, sentence):
-    subj = self_.subject_of(m, page)
     out = []
     w = m.group("w")
     pg = "f" if w.startswith("אחות") else "m"
+    subj = self_.subject_of(m, page, word_gender=pg)
     for n in (1, 2):
         rel = self_.person_from_match(m, n)
         if rel:

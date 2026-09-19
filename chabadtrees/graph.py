@@ -98,6 +98,12 @@ def build_graph(pages: dict[str, dict], relations: list[dict], config: dict) -> 
         if e is None:
             e = edges[key] = {"a": key[0], "b": key[1], "relation": relation, "evidence": [], "confidence": 0.0,
                               "flags": [], "side": rel.get("side"), "inferred": False}
+        if any(ev["source_page"] == rel["source_page"] and ev["text"] == rel.get("evidence", "") for ev in e["evidence"]):
+            # אותו משפט באותו דף נתפס בשני דפוסים – ראיה אחת, לא שתיים
+            for ev in e["evidence"]:
+                if ev["source_page"] == rel["source_page"] and ev["text"] == rel.get("evidence", ""):
+                    ev["confidence"] = max(ev["confidence"], rel.get("confidence", 0.5))
+            continue
         e["evidence"].append({"source_page": rel["source_page"], "text": rel.get("evidence", ""), "refs": rel.get("refs", []),
                               "method": rel.get("method"), "pattern": rel.get("pattern"), "confidence": rel.get("confidence", 0.5)})
         if rel.get("side") and not e.get("side"):
