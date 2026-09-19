@@ -38,7 +38,7 @@ sup{font-size:9px;color:#06c}
 """
 
 
-def render_html(chart: Chart, graph: dict, cfg: dict, title: str, subtitle: str = "", rtl: bool = True) -> str:
+def render_html(chart: Chart, graph: dict, cfg: dict, title: str, subtitle: str = "", rtl: bool = True, zoom: float = 1.0) -> str:
     refs: list[str] = []
 
     def ref_index(r: str) -> int:
@@ -90,7 +90,7 @@ def render_html(chart: Chart, graph: dict, cfg: dict, title: str, subtitle: str 
         refs_html = "<h3>הערות שוליים</h3><ol class=\"refs\">" + "".join(
             f"<li>{html.escape(_ref_text(r))}</li>" for r in refs) + "</ol>"
     return f"""<!doctype html><html lang="he" dir="ltr"><head><meta charset="utf-8"><title>{html.escape(title)}</title>
-<style>{CSS}</style></head><body><div dir="rtl"><h1>{html.escape(title)}</h1><p class="note">{html.escape(subtitle)}</p></div>
+<style>{CSS}</style></head><body style="zoom:{zoom:.3f}"><div dir="rtl"><h1>{html.escape(title)}</h1><p class="note">{html.escape(subtitle)}</p></div>
 <table class="tree">{''.join(rows)}</table><div dir="rtl">{refs_html}</div></body></html>"""
 
 

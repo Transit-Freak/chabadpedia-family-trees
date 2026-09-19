@@ -37,15 +37,15 @@ def write_outputs(trees: list[dict], graph: dict, cfg: dict, out_dir: str, png: 
         with open(wiki_path, "w", encoding="utf-8") as fh:
             fh.write(t["wikitext"])
         html_path = os.path.join(out_dir, "preview", t["slug"] + ".html")
+        width, height, zoom = estimate_png_size(t["chart"], graph)
         with open(html_path, "w", encoding="utf-8") as fh:
-            fh.write(render_html(t["chart"], graph, cfg, t["title"], " · ".join(t.get("notes", []))))
+            fh.write(render_html(t["chart"], graph, cfg, t["title"], " · ".join(t.get("notes", [])), zoom=zoom))
         previews[t["slug"]] = os.path.relpath(html_path, out_dir)
         rec = {k: v for k, v in t.items() if k not in ("chart", "wikitext", "slots")}
         rec["wiki_file"] = os.path.relpath(wiki_path, out_dir)
         rec["preview_file"] = previews[t["slug"]]
         if png:
             png_path = os.path.join(out_dir, "preview", t["slug"] + ".png")
-            width, height = estimate_png_size(t["chart"], graph)
             if screenshot(html_path, png_path, width=width, height=height):
                 rec["png_file"] = os.path.relpath(png_path, out_dir)
         index.append(rec)
@@ -54,8 +54,9 @@ def write_outputs(trees: list[dict], graph: dict, cfg: dict, out_dir: str, png: 
     return previews
 
 
-def estimate_png_size(chart, graph) -> tuple[int, int]:
-    """גודל חלון לצילום: עמודת קופסה ≈ 215px, עמודת קו ≈ 18px; שורה ≈ 64px + כותרת והערות שוליים."""
+def estimate_png_size(chart, graph) -> tuple[int, int, float]:
+    """גודל חלון לצילום: עמודת קופסה ≈ 215px, עמודת קו ≈ 18px; שורה ≈ 64px + כותרת והערות שוליים.
+    עץ רחב מ-8000px מוקטן (zoom) כדי שייכנס כולו לתמונה."""
     col_w = [18] * chart.width
     refs = set()
     for (r, c), cell in chart.cells.items():
@@ -66,9 +67,13 @@ def estimate_png_size(chart, graph) -> tuple[int, int]:
                 if pid in (e["a"], e["b"]):
                     for ev in e["evidence"]:
                         refs.update(ev.get("refs", []))
-    width = min(max(700, sum(col_w) + 120), 14000)
-    height = min(max(500, chart.height * 64 + 180 + 22 * len(refs)), 14000)
-    return width, height
+    width = max(700, sum(col_w) + 120)
+    height = max(500, chart.height * 64 + 180 + 22 * len(refs))
+    zoom = 1.0
+    if width > 8000:
+        zoom = 8000 / width
+        width, height = 8000, int(height * zoom) + 60
+    return width, min(height, 12000), zoom
 
 
 def cmd_fetch(args, cfg, store):

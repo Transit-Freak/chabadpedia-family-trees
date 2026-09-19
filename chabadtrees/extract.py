@@ -80,18 +80,20 @@ def LINK(n: int) -> str:
 
 _HON_ALT = "|".join(re.escape(h) for h in HONORIFICS)
 SUBJ = ""   # הנושא מזוהה מהטקסט שלפני ההתאמה (subject_of), לא בתוך הרגקס
-_PRE_LINK_RE = re.compile(r"(?P<pre>.*?)(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)\[\[(?P<t>[^\[\]|#]+?)(?:#[^\[\]|]*)?(?:\|(?P<d>[^\[\]]*))?\]\]\s*[,–\-:]?\s*$", re.S)
-_PRE_NAME_RE = re.compile(r"(?P<pre>.*?)(?<![א-ת])(?P<hon>(?:(?:" + _HON_ALT + r")\s+)+)(?P<n>" + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,2})\s*[,–\-:]\s*$", re.S)
+_PRE_LINK_RE = re.compile(r"(?P<pre>.*?)(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)\[\[(?P<t>[^\[\]|#]+?)(?:#[^\[\]|]*)?(?:\|(?P<d>[^\[\]]*))?\]\]\s*[,–\-:(]?\s*$", re.S)
+_PRE_NAME_RE = re.compile(r"(?P<pre>.*?)(?<![א-ת])[לבומכ]?(?P<hon>(?:(?:" + _HON_ALT + r")\s+)+)(?P<n>" + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,2})\s*[,–\-:(]\s*$", re.S)
 # בלי פסיק ("התחתן עם מרת פעשה הדסה הלפרין בתו של") – רק בריצה מלאה, כשהלקסיקון מאמת את השם
-_PRE_NAME_LOOSE_RE = re.compile(r"(?P<pre>.*?)(?<![א-ת])(?P<hon>(?:(?:" + _HON_ALT + r")\s+)+)(?P<n>" + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,3})\s*[,–\-:]?\s*$", re.S)
+_PRE_NAME_LOOSE_RE = re.compile(r"(?P<pre>.*?)(?<![א-ת])[לבומכ]?(?P<hon>(?:(?:" + _HON_ALT + r")\s+)+)(?P<n>" + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,3})\s*[,–\-:(]?\s*$", re.S)
 _OBJECT_TAIL_RE = re.compile(r"(?:(?<![א-ת])(?:של|את|עם)\s*|(?<![א-ת])[לבומכ])$")
 # "* חנה ליבא, " בתחילת פריט רשימה – השם הוא הנושא של הביטוי שאחרי הפסיק
-_PRE_LISTHEAD_RE = re.compile(r"^\s*[*#:;]+\s*(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)(?P<n>" + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,3})\s*[,–\-]\s*$")
+_PRE_LISTHEAD_RE = re.compile(r"^\s*[*#:;]+\s*(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)(?P<n>" + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,3})\s*[,–\-(]\s*$")
+# פסוקית לוואי בין הנושא לביטוי הקשר: "לר' ברוך יהודה, שהיה מראשי התנועה וחבר המועצה, בנו של ..." – מדלגים עליה
+_TRAILING_CLAUSE_RE = re.compile(r",\s*(?:ש|אשר|כ|ה|מ)[^,]{3,140},\s*$")
 _REL_WORDS = r"בתו|בנו|בתה|בנה|בתם|בנם|אחיו|אחותו|אחיה|אחותה|אמו|אביו|אמה|אביה|אשתו|בעלה|רעייתו|נכדו|נכדתו"
 _ORD2 = r"(?:\s+(?:הבכור|הבכורה|השני|השנייה|השניה|השלישי|השלישית|הרביעי|החמישי|הצעיר|הצעירה|היחיד|היחידה|הגדול|הגדולה|הקטן|הקטנה|הראשונה|הראשון))?"
 # "... בתו חנה " / "אחיו ר' משה " לפני ביטוי הקשר: השם הלא-מקושר הוא הנושא (pre חמדני – מילת הקשר הקרובה ביותר)
 _PRE_REL_NAME_RE = re.compile(r"(?P<pre>.*)(?<![א-ת])ו?(?P<rel>" + _REL_WORDS + r")" + _ORD2 + r"\s*,?\s*(?:(?:היה|הייתה|היתה|הוא|היא)\s+)?"
-                              r"(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)(?P<n>" + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,3})\s*,?\s*$", re.S)
+                              r"(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)(?P<n>" + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,3})\s*[,–\-:]?\s*$", re.S)
 _REL_WORD_INFO = {   # מילת קשר → (סוג הקשר של השם אל הדף, מגדר השם)
     "בתו": ("child", "f"), "בנו": ("child", "m"), "בתה": ("child", "f"), "בנה": ("child", "m"), "בתם": ("child", "f"), "בנם": ("child", "m"),
     "אחיו": ("sibling", "m"), "אחותו": ("sibling", "f"), "אחיה": ("sibling", "m"), "אחותה": ("sibling", "f"),
@@ -117,6 +119,7 @@ class Relation:
     person_gender: str | None = None
     relative_gender: str | None = None
     side: str | None = None          # לסבים: father / mother
+    alias: bool = False              # צד אחד נפתר משם-תצוגה לערך (לא מקישור) – ראיה חלשה יותר
     person_has_article: bool = True
     relative_has_article: bool = True
     person_name: str = ""
@@ -416,6 +419,8 @@ class Extractor:
         title, kind = hit
         if kind == "name" and not allow_names:
             return None
+        if kind == "name":
+            self._alias_used = True
         return title
 
     # ---------------------------------------------------------------- משפטים
@@ -431,8 +436,13 @@ class Extractor:
                     continue
                 seen_spans.append((m.start(), m.end(), name.split(":")[0]))
                 self._doubtful_link = False
+                self._alias_used = False
                 self._pending = []
                 rels = list(handler(self, m, title, clean))
+                if self._alias_used:
+                    for rel in rels + self._pending:
+                        rel.alias = True
+                        rel.confidence = min(rel.confidence, 0.7)
                 pending, self._pending = self._pending, []
                 seen_p = set()
                 for rel in pending:
@@ -493,9 +503,22 @@ class Extractor:
             target, display, span = links[0]
             if _looks_like_year(target):
                 return
-            # מילת התפקיד: לפני השם, או מיד אחריו עד סימן פיסוק ("* [[X]] – בנו הבכור"), לא בתיאור ("... של אביו")
+            # מילת התפקיד: לפני השם, או מיד אחריו עד סימן פיסוק ("* [[X]] – בנו הבכור"), לא בתיאור ("... של אביו").
+            # בין מילת התפקיד לקישור לא יכול להיות שם אחר: "* בנו, ר' אברהם – אביו של [[X]]" – X הוא הנכד
             tail = re.split(r"[,.;:()]", line[span[1]:], maxsplit=1)[0]
-            text = line[:span[0]] + " " + tail
+            head_part = line[:span[0]]
+            hm = None
+            for word in LIST_ROLES:
+                hm = re.search(r"(?<![א-ת])" + re.escape(word) + r"(?![א-ת])(?!\s+של)", head_part)
+                if hm:
+                    break
+            if hm:
+                between = re.sub(r"\([^)]*\)", " ", head_part[hm.end():])
+                words = [w for w in re.findall(NAME_WORD, between)
+                         if w not in wt.HONORIFIC_WORDS and w not in STOPWORDS and w not in RELATION_NOUNS and w not in wt.SUFFIX_WORDS]
+                if re.search(r"\s+של\s+|[–\-]", between) or len(words) >= 2:
+                    return
+            text = head_part + " " + tail
         else:
             head = re.split(r"\s+[–\-]\s+|,|\(|:", wt.plain(line).lstrip("*# ").strip(), maxsplit=1)[0]
             name = self.unlinked_name(head, _gender_from_honorific(head) or "")
@@ -592,18 +615,28 @@ class Extractor:
         ולכן לא נושא (אלא אם chain_ok – שרשרת יוחסין "בנו של Y, בנו של Z").
         """
         before = m.string[:m.start()]
+        subj = self._subject_in(before, m, page, chain_ok, word_gender)
+        if subj is None:
+            stripped = _TRAILING_CLAUSE_RE.sub(", ", before)
+            if stripped != before:
+                subj = self._subject_in(stripped, m, page, chain_ok, word_gender)
+        return subj if subj is not None else (page, True, None, wt.display_name(page))
+
+    def _subject_in(self, before: str, m: re.Match, page: str, chain_ok: bool, word_gender: str | None):
         page_disp = wt.display_name(page)
+        # "הרב יעקב זלמן בלוי (אביהם של [[X]])" – תמורה בסוגריים: השם שלפני הסוגריים הוא הנושא
+        apposition = before.rstrip().endswith("(")
         lm = _PRE_LINK_RE.match(before)
         if lm:
             pre = lm.group("pre")
-            is_object = bool(_OBJECT_TAIL_RE.search(pre))
+            is_object = bool(_OBJECT_TAIL_RE.search(pre)) and not apposition
             if is_object and word_gender and _gender_from_honorific(lm.group("hon") or "") == word_gender and self.page_gender_conflict(word_gender):
                 is_object = False      # "התחתן עם מרת [[X]], בתו של [[Y]]" – X היא הבת, לא הערך (שהוא גבר)
             target = wt.normalize_title(lm.group("t"))
             known = (not self.known) or target in self.known
             if (not is_object or chain_ok) and wt.is_content_link(target) and (known or lm.group("hon")) and not _looks_like_year(target):
                 return target, self._has_article(target), _gender_from_honorific(lm.group("hon") or ""), wt.display_name(target)
-            return page, True, None, page_disp
+            return (page, True, None, page_disp) if is_object else None
         rm = _PRE_REL_NAME_RE.match(before)
         if rm and not _OBJECT_TAIL_RE.search(rm.group("pre")):
             hon = (rm.group("hon") or "").strip()
@@ -641,10 +674,10 @@ class Extractor:
         if nm:
             name = self.unlinked_name(nm.group("n"), nm.group("hon") or "")
             pre = nm.group("pre")
-            is_object = bool(_OBJECT_TAIL_RE.search(pre))
+            is_object = bool(_OBJECT_TAIL_RE.search(pre)) and not apposition
             if is_object and word_gender and _gender_from_honorific(nm.group("hon") or "") == word_gender and self.page_gender_conflict(word_gender):
                 is_object = False
-            if name and not is_object and not (" " not in name and name.startswith("מ")):
+            if name and (not is_object or chain_ok) and not (" " not in name and name.startswith("מ")):
                 if name == page_disp or name in page_disp:
                     return page, True, None, page_disp
                 allow = not getattr(self, "_in_list", False)
@@ -652,7 +685,7 @@ class Extractor:
                 if resolved:
                     return resolved, True, _gender_from_honorific(nm.group("hon") or ""), wt.display_name(resolved)
                 return "~" + name, False, _gender_from_honorific(nm.group("hon") or ""), name
-        return page, True, None, page_disp
+        return None
 
     def page_gender_conflict(self, word_gender: str | None) -> bool:
         """המילה אומרת בת/בן על נושא הדף, אבל הדף עצמו כבר מסומן במגדר ההפוך."""
@@ -752,9 +785,41 @@ def h_child_unlinked(self_, m, page, sentence):
     return [r] if r else []
 
 
+def h_married_daughter_of(self_, m, page, sentence):
+    subj = self_.subject_of(m, page, word_gender="m")
+    rel = self_.person_from_match(m, 1)
+    if not rel:
+        return []
+    r = _mk(subj, rel, "parent_in_law", m, self_, page, conf=0.75)
+    return [r] if r else []
+
+
+def h_child_construct(self_, m, page, sentence):
+    """"מרת חנה מינסקי בת הרב יעקב מינסקי" → יעקב הורה של חנה."""
+    if _MARRIED_BEFORE_RE.search(m.string[max(0, m.start() - 30):m.start()]):
+        return []
+    if not m.group("t1") and not (m.group("h1") or "").strip():
+        return []      # "בן ישראל" / "בת 20" – בלי קישור או תואר לא מנחשים
+    w = m.group("w")
+    pg = "f" if w == "בת" else "m"
+    subj = self_.subject_of(m, page, chain_ok=True, word_gender=pg)
+    if subj[0] == page:
+        return []      # בלי נושא מפורש לא מנחשים
+    rel = self_.person_from_match(m, 1)
+    if not rel:
+        return []
+    r = _mk(subj, rel, "parent", m, self_, page, conf=0.7, person_gender=pg)
+    return [r] if r else []
+
+
+_MARRIED_BEFORE_RE = re.compile(r"(?:נשא|נשוי|התחתן|נישא)(?:\s+לאי?שה)?\s+(?:את\s+|ל|עם\s+)?$")
+
+
 def h_child_of(self_, m, page, sentence):
     """X, בנו של Y [ושל Z] → Y (ו-Z) הורים של X."""
     out = []
+    if _MARRIED_BEFORE_RE.search(m.string[max(0, m.start() - 30):m.start()]):
+        return []      # "נשא את בתו של X" – מטופל כחותן
     w = m.group("w")
     pg = "f" if w.startswith("בת") else "m"
     subj = self_.subject_of(m, page, chain_ok=True, word_gender=pg)
@@ -804,15 +869,18 @@ def h_parent_is(self_, m, page, sentence):
 
 
 def h_parent_of(self_, m, page, sentence):
-    """X, אביו של Y → X הורה של Y."""
-    subj = self_.subject_of(m, page)
-    rel = self_.person_from_match(m, 1)
-    if not rel:
-        return []
+    """X, אביו של Y [ו-Z] → X הורה של Y (ו-Z)."""
     w = m.group("w")
     g = "m" if w.startswith("אב") else "f"
-    r = _mk(rel, subj, "parent", m, self_, page, conf=0.7, relative_gender=g)
-    return [r] if r else []
+    subj = self_.subject_of(m, page, word_gender=g)
+    out = []
+    for n in (1, 2):
+        rel = self_.person_from_match(m, n)
+        if rel:
+            r = _mk(rel, subj, "parent", m, self_, page, conf=0.7, relative_gender=g)
+            if r:
+                out.append(r)
+    return out
 
 
 def h_spouse_verb(self_, m, page, sentence):
@@ -1039,6 +1107,8 @@ def build_patterns() -> list[tuple[str, re.Pattern, object]]:
     def add(name, regex, handler):
         P.append((name, re.compile(regex), handler))
 
+    # נשא את בתו של X / התחתן עם בת הרב X → X חותנו (בת הזוג לא נקראת בשם)
+    add("married_daughter_of", r"(?<![א-ת])(?P<w>נשא|התחתן|נישא|נשוי)(?:\s+לאי?שה)?\s+(?:את\s+|ל|עם\s+)?(?:בתו|בת|בתה)\s+(?:של\s+)?" + REF(1), h_married_daughter_of)
     # X, בנו של Y ושל Z
     add("child_of", r"(?<![א-ת])(?P<w>בנו|בנה|בתו|בתה|בנם|בתם)" + ORD + r"\s+של\s+" + REF(1) +
         r"(?:\s*,?\s*ו(?:של\s+)?" + REF(2) + r")?", h_child_of)
@@ -1046,10 +1116,13 @@ def build_patterns() -> list[tuple[str, re.Pattern, object]]:
     add("born_to", r"נולד(?:ה)?(?![א-ת])[^.\n]{0,120}?(?<![א-ת])ל(?P<k1>אביו|אביה|הוריו|הוריה)\s*,?\s*" + REF(1) +
         r"(?:[^.\n]{0,40}?(?<![א-ת])ול(?P<k2>אמו|אמה)?\s*,?\s*" + REF(2) + r")?", h_born_to)
     add("born_to_links", r"נולד(?:ה)?(?![א-ת])[^.\n]{0,120}?(?<![א-ת])ל(?P<k1>)" + LINK(1) + r"\s*,?\s*ו(?:ל)?(?P<k2>)" + REF(2), h_born_to)
+    # נולד ... לר' X / להרב X (בלי קישור, עם תואר; האם אופציונלית "ולאמו/ולמרת Y")
+    add("born_to_hon", r"נולד(?:ה)?(?![א-ת])[^.\n]{0,120}?(?<![א-ת])ל(?P<k1>)(?P<h1>(?:(?:" + _HON_ALT + r")\s+)+)" + _idx(UNLINKED_TPL, 1)
+        + r"(?:\s*,?\s*ו(?:ל)?(?P<k2>אמו|אמה)?\s*,?\s*" + REF(2) + r")?", h_born_to)
     # אביו, X / אמו הייתה X
     add("parent_is", r"(?:^|[,.;:()]\s*|(?<!מצד)\s+ו?)(?P<w>אביו|אמו|אביה|אמה|אביהם|אמם)" + VERB + r"\s*,?\s*" + NOTOF + REF(1), h_parent_is)
     # X, אביו של Y
-    add("parent_of", r"(?<![א-ת])(?P<w>אביו|אמו|אביה|אמה|אביהם|אמם)\s+של\s+" + REF(1), h_parent_of)
+    add("parent_of", r"(?<![א-ת])(?P<w>אביו|אמו|אביה|אמה|אביהם|אמם)\s+של\s+" + REF(1) + r"(?:\s*,?\s*ו(?:של\s+)?" + REF(2) + r")?", h_parent_of)
     # נשוי ל / נישאה ל / התחתן עם / נשא לאישה את
     add("spouse_verb", r"(?<![א-ת])(?P<w>נשוי|נשואה|נישא|נישאה|התחתן|התחתנה|נשא|נשאה)(?:\s+לאי?שה)?\s+(?:בזיווג\s+\S+\s+)?"
         r"(?:ל|עם\s+|את\s+)" + REF(1), h_spouse_verb)
@@ -1066,9 +1139,10 @@ def build_patterns() -> list[tuple[str, re.Pattern, object]]:
     # אחיו, X
     add("sibling_is", r"(?:^|[,.;:()]\s*|\s+ו?)(?P<w>אחיו|אחותו|אחיה|אחותה)" + ORD + VERB + r"\s*,?\s*" + NOTOF + LINK(1), h_sibling_is)
     # ילדיו: [[X]], [[Y]] / בניו הם / אחיו הם
-    add("children_list", r"(?<![א-ת])(?P<w>ילדיו|ילדיה|ילדיהם|בניו|בנותיו|בניהם|בנותיהם|צאצאיו|צאצאיהם)"
-        r"\s*(?:הם|הן|היו|הינם)?\s*[:,]?\s*(?P<rest>[^.\n]+)", h_list_of_links("parent", "child", 0.75, True))
-    add("siblings_list", r"(?<![א-ת])(?P<w>אחיו ואחיותיו|אחיו|אחיותיו|אחיה|אחיותיה)\s*(?:הם|הן|היו|הינם)\s*[:,]?\s*(?P<rest>[^.\n]+)",
+    _LIST_START = r"\s*(?:הם|הן|היו|הינם)?\s*(?::|,|(?=\s*(?:(?:" + _HON_ALT + r")\s+)*\[\[))\s*"
+    add("children_list", r"(?<![א-ת])(?P<w>ילדיו|ילדיה|ילדיהם|בניו|בנותיו|בניהם|בנותיהם|צאצאיו|צאצאיהם)" + _LIST_START
+        + r"(?P<rest>[^.\n]+)", h_list_of_links("parent", "child", 0.75, True))
+    add("siblings_list", r"(?<![א-ת])(?P<w>אחיו ואחיותיו|אחיו|אחיותיו|אחיה|אחיותיה)" + _LIST_START + r"(?P<rest>[^.\n]+)",
         h_list_of_links("sibling", "rel", 0.7, True))
     # בנו הבכור [[X]] / בתו, [[Y]]
     add("child_is", r"(?<![א-ת])(?P<w>בנו|בתו|בנם|בתם|בנה|בתה)" + ORD + r"\s*,?\s*(?:הוא|היא)?\s*,?\s*" + NOTOF + r"(?P<rest>" + LINK(1) + r")",
@@ -1076,6 +1150,8 @@ def build_patterns() -> list[tuple[str, re.Pattern, object]]:
     # בתו חנה / בנו, ר' יעקב אמסל (בלי קישור; ריצה מלאה)
     add("child_unlinked", r"(?<![א-ת])(?P<w>בנו|בתו|בנם|בתם|בנה|בתה)" + ORD + r"\s*,?\s*(?:הוא|היא)?\s*,?\s*" + NOTOF
         + _idx(HON_TPL, 1) + _idx(UNLINKED_TPL, 1), h_child_unlinked)
+    # X בת הרב Y / בן [[Y]] (סמיכות) – רק עם תואר או קישור
+    add("child_construct", r"(?<![א-ת])(?P<w>בן|בת)\s+" + REF(1), h_child_construct)
     # X, נכדו של Y / נינו של
     add("grandparent_of", r"(?<![א-ת])(?P<w>נכדו|נכדתו|נכדם|נכדתם|נינו|נינתו)\s+של\s+" + REF(1), h_grandparent_of)
     # סבו מצד אביו, X

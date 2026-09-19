@@ -105,7 +105,8 @@ def build_graph(pages: dict[str, dict], relations: list[dict], config: dict) -> 
                     ev["confidence"] = max(ev["confidence"], rel.get("confidence", 0.5))
             continue
         e["evidence"].append({"source_page": rel["source_page"], "text": rel.get("evidence", ""), "refs": rel.get("refs", []),
-                              "method": rel.get("method"), "pattern": rel.get("pattern"), "confidence": rel.get("confidence", 0.5)})
+                              "method": rel.get("method"), "pattern": rel.get("pattern"), "confidence": rel.get("confidence", 0.5),
+                              "alias": bool(rel.get("alias"))})
         if rel.get("side") and not e.get("side"):
             e["side"] = rel["side"]
 
@@ -348,15 +349,62 @@ def _consistency(persons: dict, edges: dict) -> None:
             if e["b"] == child:
                 e["flags"].append("self")
             cb, pb = _year(persons[child]["born"]), _year(persons[e["b"]]["born"])
-            cd = _year(persons[child]["died"])
+            cd, pd = _year(persons[child]["died"]), _year(persons[e["b"]]["died"])
             if (cb and pb and cb < pb + 12) or (cd and pb and cd < pb):
                 e["flags"].append("שנת לידה של ההורה מאוחרת מדי")
                 e["confidence"] = min(e["confidence"], 0.3)
+            elif cb and pd and cb > pd + 1:
+                e["flags"].append("ההורה נפטר לפני לידת הילד")
+                e["confidence"] = min(e["confidence"], 0.3)
+    _break_cycles(persons, edges)
     # הורה שהוא גם בן זוג
     spouse_pairs = {(e["a"], e["b"]) for e in edges.values() if e["relation"] == "spouse"}
     for e in edges.values():
         if e["relation"] == "parent" and ((e["a"], e["b"]) in spouse_pairs or (e["b"], e["a"]) in spouse_pairs):
             e["flags"].append("הורה שמסומן גם כבן זוג")
+
+
+def _break_cycles(persons: dict, edges: dict, min_conf: float = 0.5) -> None:
+    """מעגל בקשרי הורה-ילד (X אב של Y ו-Y אב של X, או דרך כמה דורות) אינו אפשרי – בדרך כלל תוצאה של
+    שם שחוזר בדורות ("אביו ר' עמרם בלוי" שנפתר לערך של הנכד). מורידים את הקשר החלש ביותר במעגל
+    (ראיה שנפתרה משם-תצוגה נחשבת חלשה יותר), עד שאין מעגלים."""
+    for _round in range(50):
+        parents: dict[str, list[tuple[str, dict]]] = defaultdict(list)
+        for e in edges.values():
+            if e["relation"] == "parent" and e["confidence"] >= min_conf:
+                parents[e["a"]].append((e["b"], e))
+        color: dict[str, int] = {}
+        stack_edges: list[dict] = []
+        cycle: list[dict] | None = None
+
+        def dfs(u: str) -> bool:
+            nonlocal cycle
+            color[u] = 1
+            for v, e in parents.get(u, []):
+                stack_edges.append(e)
+                if color.get(v, 0) == 1:
+                    # המעגל: מהקשר שנכנס ל-v ועד הקשר הנוכחי
+                    start = next(i for i, x in enumerate(stack_edges) if x["a"] == v)
+                    cycle = stack_edges[start:]
+                    return True
+                if color.get(v, 0) == 0 and dfs(v):
+                    return True
+                stack_edges.pop()
+            color[u] = 2
+            return False
+
+        for node in list(parents):
+            if color.get(node, 0) == 0 and dfs(node):
+                break
+        if not cycle:
+            return
+
+        def weakness(e: dict):
+            alias = any(ev.get("alias") for ev in e["evidence"])
+            return (0 if alias else 1, e["confidence"], len(e["evidence"]))
+        weakest = min(cycle, key=weakness)
+        weakest["flags"].append("מעגל בעץ היוחסין")
+        weakest["confidence"] = min(weakest["confidence"], 0.2)
 
 
 HEB_VALUES = {"א": 1, "ב": 2, "ג": 3, "ד": 4, "ה": 5, "ו": 6, "ז": 7, "ח": 8, "ט": 9, "י": 10, "כ": 20, "ך": 20, "ל": 30,

@@ -118,6 +118,10 @@ def box_content(chart: Chart, bid: str, graph: dict, cfg: dict, with_refs: bool 
             ref_texts = refs
     if ref_texts:
         label += "".join(sanitize_ref(r) for r in ref_texts[:2])
+    if node is not None and info["role"] == "member" and getattr(node, "extra_children", None):
+        names = [graph["persons"].get(c, {}).get("name") or c.lstrip("~").split("@", 1)[0] for c in node.extra_children]
+        word = "ילדים נוספים" if any(m.children for m in node.marriages) else "ילדים"
+        label += f"<br /><small>{word}: " + ", ".join(names) + "</small>"
     if node is not None and info["role"] == "member" and node.truncated:
         label += "<br /><small>(יש צאצאים נוספים)</small>"
     return label

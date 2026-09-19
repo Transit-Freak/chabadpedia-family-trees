@@ -478,6 +478,9 @@ def _tree_record(graph: dict, cfg: dict, title: str, forest: list[TreeNode], spe
 
     notes = [f"שורשים: {', '.join(disp(t.person) for t in forest)}",
              f"אנשים בעץ: {len(set(shown))} בני משפחה + {len(set(spouses))} בני זוג"]
+    extra = sum(len(getattr(n, "extra_children", [])) for t in forest for n in t.all_nodes())
+    if extra:
+        notes.append(f"ילדים בלי ערך שמוצגים כטקסט בקופסת ההורה: {extra}")
     truncated = [n.person for t in forest for n in t.all_nodes() if n.truncated]
     if truncated:
         notes.append("ענפים שנקטעו בגלל מגבלת גודל: " + ", ".join(disp(p) for p in truncated[:8]))

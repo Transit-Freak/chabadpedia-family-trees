@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections import defaultdict
 from dataclasses import dataclass, field
 
+from . import wikitext as wt
 from .graph import children_of, parents_of, spouses_of, year_of
 
 
@@ -15,6 +16,7 @@ from .graph import children_of, parents_of, spouses_of, year_of
 class Marriage:
     spouse: str | None                     # מזהה בן/בת הזוג, או None אם לא ידוע
     children: list["TreeNode"] = field(default_factory=list)
+    deferred: list[str] = field(default_factory=list)   # ילדים בלי ערך שממתינים לשלב השני של הבנייה
 
 
 @dataclass
@@ -24,6 +26,7 @@ class TreeNode:
     depth: int = 0
     truncated: bool = False               # יש צאצאים נוספים שלא הוצגו (מגבלת גודל)
     note: str = ""
+    extra_children: list[str] = field(default_factory=list)   # ילדים בלי ערך, בשם פרטי בלבד – טקסט בקופסה
 
     def all_nodes(self):
         yield self
@@ -104,8 +107,19 @@ class TreeBuilder:
             return sorted(pars, key=rank)[0]
         return owner_of
 
+    def is_bare(self, pid: str) -> bool:
+        """ילד בלי ערך, בשם פרטי בלבד, בלי בן זוג ובלי ילדים – מוצג כטקסט בקופסת ההורה, לא כקופסה."""
+        if not pid.startswith("~"):
+            return False
+        words = [w for w in wt.normalize_quotes(self.persons.get(pid, {}).get("name", "")).split() if w not in wt.HONORIFIC_WORDS]
+        return len(words) <= 1 and not self._spouses.get(pid) and not self._children.get(pid)
+
     def build(self, root: str, members: set[str] | None, expand: set[str] | None, max_nodes: int, max_depth: int | None = None) -> TreeNode:
-        """members: מי מותר להופיע כצאצא (None = כולם). expand: מי מרחיבים את צאצאיו (None = לפי כללי המשפחה)."""
+        """members: מי מותר להופיע כצאצא (None = כולם). expand: מי מרחיבים את צאצאיו (None = לפי כללי המשפחה).
+
+        שני שלבים: קודם כל מי שיש לו ערך (כדי שילדים בלי ערך לא ידחקו ענפים מקושרים מחוץ למגבלת הגודל),
+        ואחר כך ילדים בלי ערך לפי דורות, כל עוד נשאר מקום. ילד בלי ערך בשם פרטי בלבד נכנס כטקסט לקופסת ההורה.
+        """
         visited = {root}
         node_count = [1]
 
@@ -117,7 +131,7 @@ class TreeBuilder:
         owner_of = self.owner_of_in(members)
         self.owner_of = owner_of
 
-        def build_node(pid: str, depth: int) -> TreeNode:
+        def make_node(pid: str, depth: int) -> TreeNode:
             node = TreeNode(person=pid, depth=depth)
             spouses = list(dict.fromkeys(self._spouses.get(pid, [])))
             kids = [c for c in dict.fromkeys(self._children.get(pid, [])) if members is None or c in members]
@@ -147,19 +161,44 @@ class TreeBuilder:
             for sp in order:
                 m = Marriage(spouse=sp)
                 for c in by_spouse[sp]:
+                    if self.is_bare(c):
+                        visited.add(c)
+                        node.extra_children.append(c)
+                        continue
                     if stop:
                         node.truncated = True
-                        break
+                        continue
+                    if c.startswith("~"):
+                        m.deferred.append(c)
+                        continue
                     if node_count[0] >= max_nodes:
                         node.truncated = True
-                        break
+                        continue
                     visited.add(c)
                     node_count[0] += 1
-                    m.children.append(build_node(c, depth + 1))
+                    m.children.append(make_node(c, depth + 1))
                 node.marriages.append(m)
             return node
 
-        return build_node(root, 0)
+        tree = make_node(root, 0)
+        # שלב שני: ילדים בלי ערך (עם שם משפחה, בן זוג או ילדים), לפי דורות, כל עוד יש מקום
+        pending = sorted(tree.all_nodes(), key=lambda n: n.depth)
+        while pending:
+            node = pending.pop(0)
+            for m in node.marriages:
+                for c in m.deferred:
+                    if c in visited:
+                        continue
+                    if node_count[0] >= max_nodes:
+                        node.truncated = True
+                        continue
+                    visited.add(c)
+                    node_count[0] += 1
+                    child = make_node(c, node.depth + 1)
+                    m.children.append(child)
+                    pending.append(child)
+                m.deferred = []
+        return tree
 
 
 # --------------------------------------------------------------------------- סידור על הגריד
