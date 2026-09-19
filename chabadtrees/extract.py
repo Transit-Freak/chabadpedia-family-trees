@@ -34,7 +34,7 @@ MALE_HONORIFICS = {"הרב", "רבי", "ר'", "הרה\"ח", "הרה\"ג", "הר�
 STOPWORDS = {
     "של", "אשר", "היה", "הייתה", "היתה", "שהיה", "שהייתה", "הוא", "היא", "אשת", "בן", "בת", "את", "על", "אל", "עם", "אצל",
     "לפני", "אחרי", "ו", "רב", "ראש", "אב\"ד", "רבה", "ממלא", "מחבר", "משפיע", "שליח", "נולד", "נולדה", "נפטר", "נפטרה",
-    "התחתן", "נישא", "נישאה", "בעיר", "בעיירה", "בכפר", "מהעיר", "בשנת", "בשנה", "ביום", "בליל", "בערב", "מן", "מבני", "מגדולי",
+    "התחתן", "התחתנה", "נישא", "נישאה", "נשא", "נשאה", "נשוי", "נשואה", "בעיר", "בעיירה", "בכפר", "מהעיר", "בשנת", "בשנה", "ביום", "בליל", "בערב", "מן", "מבני", "מגדולי",
     "מחשובי", "מזקני", "מראשי", "מתלמידי", "משפחת", "לבית", "ואשתו", "ואמו", "ואביו", "ובנו", "ובתו", "וילדיו", "וכן", "גם",
     "אך", "אבל", "כי", "אם", "לא", "אין", "יש", "עוד", "כל", "בכל", "אחד", "אחת", "שני", "שתי", "רק", "כבר", "עדיין", "כאשר",
     "בו", "בה", "לו", "לה", "בהם", "להם", "שם", "כאן", "אז", "שהוא", "שהיא", "כדי", "לאחר", "בעת", "בזמן", "בתקופת",
@@ -58,7 +58,7 @@ LINK_TPL = r"\[\[(?P<t{n}>[^\[\]|#]+?)(?:#[^\[\]|]*)?(?:\|(?P<d{n}>[^\[\]]*))?\]
 HON_TPL = r"(?P<h{n}>(?:(?:" + "|".join(re.escape(h) for h in HONORIFICS) + r")\s+)*)"
 NAME_WORD = r"[א-ת][א-ת'\"\-]*"
 _STOP_CORE = ["של", "אשר", "היה", "הייתה", "היתה", "הוא", "היא", "את", "על", "עם", "אצל", "בן", "בת", "וכן", "גם", "כי", "אך", "אבל",
-              "נולד", "נולדה", "נפטר", "נפטרה", "התחתן", "נישא", "נישאה", "ז\"ל", "זצ\"ל", "ע\"ה", "הי\"ד", "נ\"ע", "שליט\"א",
+              "נולד", "נולדה", "נפטר", "נפטרה", "התחתן", "התחתנה", "נישא", "נישאה", "נשא", "נשאה", "נשוי", "נשואה", "ז\"ל", "זצ\"ל", "ע\"ה", "הי\"ד", "נ\"ע", "שליט\"א",
               "אמו", "אביו", "אמה", "אביה", "אשתו", "בעלה", "נכדו", "נכדתו", "אחיו", "אחותו", "בנו", "בתו", "חתנו", "כלתו",
               "סבו", "סבתו", "הוריו", "ילדיו", "בניו", "בנותיו", "רעייתו", "זוגתו", "חותנו", "חמיו", "גיסו", "דודו", "נינו", "אלמנתו"]
 _STOP_ALL = _STOP_CORE + ["ו" + w for w in _STOP_CORE] + ["ול" + w for w in _STOP_CORE] + ["ל" + w for w in _STOP_CORE]
@@ -84,9 +84,36 @@ _PRE_LINK_RE = re.compile(r"(?P<pre>.*?)(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)\[
 _PRE_NAME_RE = re.compile(r"(?P<pre>.*?)(?<![א-ת])[לבומכ]?(?P<hon>(?:(?:" + _HON_ALT + r")\s+)+)(?P<n>" + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,2})\s*[,–\-:(]\s*$", re.S)
 # בלי פסיק ("התחתן עם מרת פעשה הדסה הלפרין בתו של") – רק בריצה מלאה, כשהלקסיקון מאמת את השם
 _PRE_NAME_LOOSE_RE = re.compile(r"(?P<pre>.*?)(?<![א-ת])[לבומכ]?(?P<hon>(?:(?:" + _HON_ALT + r")\s+)+)(?P<n>" + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,3})\s*[,–\-:(]?\s*$", re.S)
+_FILE_LINK_RE = re.compile(r"\[\[(?:קובץ|תמונה|מדיה|File|Image|Media):(?:[^\[\]]|\[\[[^\[\]]*\]\])*\]\]", re.I)
+_NAMED_AFTER_RE = re.compile(r"(?:על\s+שם|ע\"ש|לזכר|נקרא(?:ת|ו|ה)?\s+(?:על\s+)?שם|שמו\s+על\s+שם|שמה\s+על\s+שם)\s*$")
+_MARRIED_OBJECT_RE = re.compile(r"(?:נשא|נשוי|התחתן|נישא)(?:\s+לאי?שה)?\s+(?:את\s+|ל|עם\s+)(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)(?P<n>"
+                                + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,2})\s*,?\s*$")
+
+
+def _primary_gender(title: str, first_text: str) -> str | None:
+    """מגדר הדף מהכותרת ומהמשפט הראשון (לא מפעלים על הבנות בהמשך הדף): "הרבנית X", "(אשת ...)", "נולדה"."""
+    t = wt.normalize_quotes(title)
+    words = t.split()
+    if words and words[0] in FEMALE_HONORIFICS:
+        return "f"
+    if words and words[0] in MALE_HONORIFICS:
+        return "m"
+    dis = wt.disambiguator(t)
+    if dis:
+        if re.match(r"(?:אשת|בת|אם|כלת|נכדת|אחות|אלמנת|סבת|דודת|נינת)\s", dis + " "):
+            return "f"
+        if re.match(r"(?:בן|אב|אבי|חתן|נכד|אח|בעל|סב|דוד|נין)\s", dis + " "):
+            return "m"
+    m = re.search(r"(?<![א-ת])(נולד|נולדה|נפטר|נפטרה|היה|הייתה|היתה|הוא|היא|כיהן|כיהנה|שימש|שימשה|למד|למדה|נישא|נישאה|התחתן|התחתנה)(?![א-ת])", first_text)
+    if m:
+        w = m.group(1)
+        return "f" if (w.endswith("ה") and w not in ("היה", "כיהן")) or w == "היא" else "m"
+    return None
+
+
 _OBJECT_TAIL_RE = re.compile(r"(?:(?<![א-ת])(?:של|את|עם)\s*|(?<![א-ת])[לבומכ])$")
 # "* חנה ליבא, " בתחילת פריט רשימה – השם הוא הנושא של הביטוי שאחרי הפסיק
-_PRE_LISTHEAD_RE = re.compile(r"^\s*[*#:;]+\s*(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)(?P<n>" + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,3})\s*[,–\-(]\s*$")
+_PRE_LISTHEAD_RE = re.compile(r"^\s*[*#:;]+\s*(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)(?P<n>" + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,3})\s*[,–\-(.]\s*$")
 # פסוקית לוואי בין הנושא לביטוי הקשר: "לר' ברוך יהודה, שהיה מראשי התנועה וחבר המועצה, בנו של ..." – מדלגים עליה
 _TRAILING_CLAUSE_RE = re.compile(r",\s*(?:ש|אשר|כ|ה|מ)[^,]{3,140},\s*$")
 _REL_WORDS = r"בתו|בנו|בתה|בנה|בתם|בנם|אחיו|אחותו|אחיה|אחותה|אמו|אביו|אמה|אביה|אשתו|בעלה|רעייתו|נכדו|נכדתו"
@@ -270,8 +297,10 @@ class Extractor:
     def extract(self, title: str, wikitext_raw: str) -> tuple[list[Relation], dict]:
         """מחזיר (רשימת קשרים, פרטי האדם: gender/born/died/categories/surname)."""
         text = wt.normalize_quotes(wt.strip_comments(wikitext_raw or ""))
+        text = _FILE_LINK_RE.sub(" ", text)      # כיתובי תמונות ("אהל הרבניות: הרבנית X (אשת אדמו"ר Y)...") אינם משפטים
         info = {"title": title, "gender_votes": {"m": 0, "f": 0}, "born": None, "died": None,
-                "categories": wt.categories(text), "surname": wt.surname_of(title)}
+                "categories": wt.categories(text), "surname": wt.surname_of(title),
+                "primary_gender": _primary_gender(title, wt.plain(wt.strip_templates(text))[:400])}
         first = wt.normalize_quotes(title).split()[0] if title.split() else ""
         if first in FEMALE_HONORIFICS:
             info["gender_votes"]["f"] += 2
@@ -306,7 +335,8 @@ class Extractor:
                     continue
                 if not line.lstrip().startswith(("*", "#")) and stripped:
                     list_context = ""
-                for sentence in wt.split_sentences(line):
+                units = [line] if line.lstrip().startswith(("*", "#", ";", ":")) else wt.split_sentences(line)
+                for sentence in units:
                     self._from_sentence(title, sentence, refs, info, add, in_family_section, sec_title, list_context)
                     self._gender_votes(sentence, info)
 
@@ -435,6 +465,8 @@ class Extractor:
                 if any(s <= m.start() < e and name.split(":")[0] == n for s, e, n in seen_spans):
                     continue
                 seen_spans.append((m.start(), m.end(), name.split(":")[0]))
+                if _NAMED_AFTER_RE.search(clean[max(0, m.start() - 30):m.start()]):
+                    continue      # "נקראה על שם אשת אדמו"ר הצמח צדק" – לא קשר של הדף
                 self._doubtful_link = False
                 self._alias_used = False
                 self._pending = []
@@ -478,7 +510,7 @@ class Extractor:
             spouse_target = wt.normalize_title(sm.group("t9"))
             links = [l for l in links if l[0] != spouse_target]
             if not links:
-                head = re.split(r"\s+[–\-]\s+|,|\(|:|(?<![א-ת])(?:אשת|נישאה|נשואה|בעלה)", wt.plain(line).lstrip("*# ").strip(), maxsplit=1)[0]
+                head = re.split(r"\s+[–\-]\s+|,|\(|:|\.\s|(?<![א-ת])(?:אשת|נישאה|נשואה|בעלה)", wt.plain(line).lstrip("*# ").strip(), maxsplit=1)[0]
                 name = self.unlinked_name(head, _gender_from_honorific(head) or "")
                 if name:
                     ctx = list_context or sec_title
@@ -520,7 +552,7 @@ class Extractor:
                     return
             text = head_part + " " + tail
         else:
-            head = re.split(r"\s+[–\-]\s+|,|\(|:", wt.plain(line).lstrip("*# ").strip(), maxsplit=1)[0]
+            head = re.split(r"\s+[–\-]\s+|,|\(|:|\.\s", wt.plain(line).lstrip("*# ").strip(), maxsplit=1)[0]
             name = self.unlinked_name(head, _gender_from_honorific(head) or "")
             if not name or (not _gender_from_honorific(head) and " " not in name and not self.plain_name_ok(name)):
                 return
@@ -538,6 +570,13 @@ class Extractor:
         ctx = list_context or sec_title
         if role is None and re.search(r"ילדי|צאצא|בניו|בנותיו|בני משפחתו", ctx):
             role = ("parent", "child")
+        implicit_gender = None
+        if role is None and not links and re.fullmatch(r"משפחת[וה]?", ctx.strip()):
+            # "* רבקה. נשאה לשמואל" תחת "משפחתו" – בת (משתמע מהנישואין); "* משה – נשא את" – בן
+            mv = re.search(r"(?<![א-ת])(נשאה|נישאה|נשואה|אשת|בעלה|נשא|נישא|נשוי|התחתן|התחתנה)(?![א-ת])", wt.plain(line))
+            if mv:
+                role = ("parent", "child")
+                implicit_gender = "f" if mv.group(1) in ("נשאה", "נישאה", "נשואה", "אשת", "בעלה", "התחתנה") else "m"
         if role is None and re.search(r"^אחיו|אחיותיו", ctx):
             role = ("sibling", "rel")
         if role is None and re.search(r"^חתניו|^כלותיו", ctx):
@@ -546,7 +585,7 @@ class Extractor:
             return
         relation, direction = role
         has = self._has_article(target) if not target.startswith("~") else False
-        gender = honorific_before(line[max(0, span[0] - 30):span[0]]) if links else _gender_from_honorific(head)
+        gender = honorific_before(line[max(0, span[0] - 30):span[0]]) if links else (_gender_from_honorific(head) or implicit_gender)
         if gender is None and direction == "child":
             if "בנותיו" in ctx or re.search(r"(?<![א-ת])בתו(?![א-ת])", text):
                 gender = "f"
@@ -661,6 +700,20 @@ class Extractor:
                 if r:
                     self._pending.append(r)
                 return subj
+        mo = _MARRIED_OBJECT_RE.search(before)
+        if mo:
+            hon = (mo.group("hon") or "").strip()
+            name = self.unlinked_name(mo.group("n"), hon)
+            if not name:
+                # מושא של "נשא את" הוא כמעט תמיד שם – גם אם אינו בלקסיקון ("רוחמה")
+                raw = clean_unlinked_name(mo.group("n"))
+                if raw and " " not in raw and raw not in self.common_words and raw not in STOPWORDS:
+                    name = raw
+            if name and not _looks_like_year(name) and name != page_disp:
+                resolved = self.resolve_alias((hon + " " + name).strip(), False) or self.resolve_alias(name, False)
+                if resolved:
+                    return resolved, True, _gender_from_honorific(hon), wt.display_name(resolved)
+                return "~" + name, False, _gender_from_honorific(hon), name
         lh = _PRE_LISTHEAD_RE.match(before)
         if lh:
             hon = (lh.group("hon") or "").strip()
@@ -691,6 +744,9 @@ class Extractor:
         """המילה אומרת בת/בן על נושא הדף, אבל הדף עצמו כבר מסומן במגדר ההפוך."""
         if not word_gender or not self.current_info:
             return False
+        primary = self.current_info.get("primary_gender")
+        if primary:
+            return primary != word_gender
         votes = self.current_info.get("gender_votes") or {}
         other = "f" if word_gender == "m" else "m"
         return votes.get(other, 0) >= 2 and votes.get(other, 0) > votes.get(word_gender, 0)
@@ -957,6 +1013,18 @@ def h_list_of_links(relation: str, direction: str, conf: float = 0.75, gender_fr
         rest = m.group("rest")
         if " של " in rest[:12]:
             return []
+        # "(בנו ר' [[X]])" – תיאור, לא פריט (גם כשיש קישור בתוכו); סוגריים בתוך קישור ("[[X (בן Y)]]") נשארים
+        links_found = re.findall(r"\[\[[^\[\]]*\]\]", rest)
+        for i, lk in enumerate(links_found):
+            rest = rest.replace(lk, f"\x00{i}\x00", 1)
+        rest = re.sub(r"\([^()]*\)", " ", rest)
+        for i, lk in enumerate(links_found):
+            rest = rest.replace(f"\x00{i}\x00", lk)
+        parts = re.split(r"(\[\[[^\[\]]*\]\])", rest)
+        cut = next((i for i, part in enumerate(parts) if i % 2 == 0 and re.search(r"\s+[–\-]\s+", part)), None)
+        if cut is not None:                                          # "[[A]], [[B]] – רב בעיר [[C]]"
+            parts[cut] = re.split(r"\s+[–\-]\s+", parts[cut], maxsplit=1)[0]
+            rest = "".join(parts[:cut + 1])
         w = m.groupdict().get("w") or ""
         for target, display, span in wt.wikilinks(rest):
             if _looks_like_year(target):

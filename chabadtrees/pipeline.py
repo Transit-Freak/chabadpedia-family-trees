@@ -332,16 +332,62 @@ def family_specs(graph: dict, cfg: dict) -> list[dict]:
     return specs
 
 
+def _similar_surname(a: str, b: str) -> bool:
+    """בלוי/בלויא, גורארי/גוראריה – אותו שם משפחה בכתיב שונה."""
+    import difflib
+    a, b = wt.normalize_quotes(a), wt.normalize_quotes(b)
+    if not a or not b:
+        return False
+    if a == b or (len(min(a, b, key=len)) >= 4 and (a.startswith(b) or b.startswith(a))):
+        return True
+    return difflib.SequenceMatcher(None, a, b).ratio() >= 0.85
+
+
 def family_surnames(graph: dict, spec: dict) -> set[str]:
-    names = set()
+    """שמות המשפחה של השושלת: שם הקטגוריה ("משפחת וילהלם" → וילהלם) וכתיבים דומים שלו אצל בני המשפחה.
+    אם שם הקטגוריה אינו שם משפחה ("משפחת אדמו"ר הצמח צדק") – שם המשפחה הנפוץ ביותר בקטגוריה."""
     label = spec.get("label", "")
+    base = ""
     for pref in ("משפחת ", "עץ משפחת "):
         if label.startswith(pref):
-            names.add(label[len(pref):].strip())
-    from collections import Counter
+            base = label[len(pref):].strip()
     cnt = Counter(graph["persons"][m]["surname"] for m in spec["members"] if m in graph["persons"] and graph["persons"][m]["surname"])
-    names |= {sn for sn, n in cnt.most_common(3) if n >= 2}
+    names: set[str] = set()
+    if base and any(_similar_surname(base, sn) for sn in cnt):
+        names.add(base)
+    elif cnt:
+        names.add(cnt.most_common(1)[0][0])
+    elif base:
+        names.add(base)
+    names |= {sn for sn in cnt if any(_similar_surname(sn, n) for n in list(names))}
     return names
+
+
+def bloodline_members(graph: dict, members: set[str], surnames: set[str], tb: TreeBuilder) -> set[str]:
+    """מי שייך לעץ של המשפחה: נושאי שם המשפחה, הוריהם וצאצאיהם (גם דרך בנות, בכל שם משפחה), ובני זוגם.
+    קרובים של חתנים וכלות שנמצאים בקטגוריה (אבי החתן, אחיו) אינם חלק מהעץ."""
+    def sn(pid: str) -> str:
+        return graph["persons"].get(pid, {}).get("surname") or ""
+    core = {m for m in members if sn(m) and any(_similar_surname(sn(m), x) for x in surnames)}
+    # "חיה מושקא שניאורסון (אשת אדמו"ר הצמח צדק)": שם נישואין – היא בת זוג, לא זרע; אחרת אביה (אלטשולר) היה נכנס לעץ
+    for m in list(core):
+        p = graph["persons"].get(m, {})
+        if p.get("gender") == "f" and any(sp in core for sp in tb._spouses.get(m, [])) \
+                and not any(par in core for par in tb._parents.get(m, [])):
+            core.discard(m)
+    if not core:
+        return set(members)
+    changed = True
+    while changed:
+        changed = False
+        for m in members:
+            if m in core:
+                continue
+            if any(p in core for p in tb._parents.get(m, [])) or any(c in core for c in tb._children.get(m, [])):
+                core.add(m)
+                changed = True
+    spouses = {sp for m in core for sp in tb._spouses.get(m, []) if sp in members}
+    return core | spouses
 
 
 def married_in(graph: dict, members: set[str], surnames: set[str], tb: TreeBuilder) -> set[str]:
@@ -438,10 +484,13 @@ def build_trees(graph: dict, cfg: dict, only_label: str | None = None, root: str
             continue
         surnames = family_surnames(graph, spec)
         tb.bloodline_surnames = surnames
+        # רק השושלת: נושאי השם, הוריהם, צאצאיהם ובני זוגם – לא קרובי החתנים שבקטגוריה
+        core = bloodline_members(graph, _with_unlinked_relatives(graph, spec["members"]), surnames, tb)
         # "נכנס בנישואין" נבדק גם מול בני זוג בלי ערך (בת המשפחה שאין לה ערך) – אחרת חתן נחשב שורש
-        mi = married_in(graph, _with_unlinked_relatives(graph, spec["members"]), surnames, tb)
+        mi = married_in(graph, core, surnames, tb)
         tb.married_in = mi
-        members = _with_unlinked_relatives(graph, spec["members"], exclude_parents_of=mi)
+        members = _with_unlinked_relatives(graph, core & spec["members"] | {m for m in core if m.startswith("~")}, exclude_parents_of=mi)
+        members &= core | {m for m in members if m.startswith("~")}
         # הורים (מקושרים) של מי שהתחתן לתוך המשפחה אינם חלק מהעץ
         for pid in list(members):
             if pid in mi:
@@ -473,6 +522,15 @@ def build_trees(graph: dict, cfg: dict, only_label: str | None = None, root: str
     return out
 
 
+# מילה שנייה בשם פרטי כפול ("מנחם מענדל", "שניאור זלמן", "חיה מושקא") – שם של שתי מילים כזה עדיין אינו מזהה
+_GIVEN_SECOND = {"מענדל", "מנדל", "זלמן", "מושקא", "לאה", "דובער", "דוב", "בער", "יצחק", "לייב", "ליב", "שרה", "רבקה", "רחל",
+                 "דינה", "מלכה", "חנה", "אסתר", "מרים", "שלמה", "משה", "אהרן", "אהרון", "יוסף", "דוד", "יעקב", "אברהם", "מאיר",
+                 "צבי", "הירש", "וואלף", "זאב", "ישראל", "ברוך", "שלום", "חיים", "נחום", "נח", "יהודה", "אליהו", "אלימלך", "מרדכי",
+                 "שמואל", "שניאור", "בנימין", "נתן", "אריה", "פייביש", "שרגא", "טודרוס", "בצלאל", "אלעזר", "יהושע", "יחיאל", "מיכל",
+                 "גיטל", "ביילא", "בילא", "פריידא", "רייזל", "ליבא", "שיינא", "שטערנא", "נחמה", "ברכה", "חוה", "שפרה", "בתיה",
+                 "טובה", "רעכיל", "מושקה", "פעשא", "זיסל", "מינדל", "בלומה", "יוכבד", "צפורה", "ציפורה"}
+
+
 def _subtree_size(node: TreeNode) -> int:
     return sum(1 for _ in node.all_nodes())
 
@@ -487,6 +545,21 @@ def split_forest(graph: dict, cfg: dict, title: str, forest: list[TreeNode], max
 
     def disp(pid: str) -> str:
         return graph["persons"].get(pid, {}).get("name") or wt.display_name(pid.split("@", 1)[0].lstrip("~"))
+
+    def nameable(pid: str) -> bool:
+        """שורש לעץ ענף: מי שיש לו ערך, או שם לא-מקושר של שתי מילים לפחות (לא "מנחם מענדל" סתם)."""
+        if not pid.startswith("~"):
+            return True
+        words = [w for w in wt.normalize_quotes(disp(pid)).split() if w not in wt.HONORIFIC_WORDS and w != "לבית"]
+        return len(words) >= 3 or (len(words) == 2 and words[1] not in _GIVEN_SECOND)
+
+    def branch_name(node: TreeNode) -> str:
+        """"צאצאי X", ולאישה עם בן זוג – "צאצאי X ובעלה Y"."""
+        p = graph["persons"].get(node.person, {})
+        sps = [m.spouse for m in node.marriages if m.spouse]
+        if p.get("gender") == "f" and sps:
+            return f"{disp(node.person)} ובעלה {disp(sps[0])}"
+        return disp(node.person)
 
     def fits(fr: list[TreeNode]) -> bool:
         if sum(_subtree_size(t) for t in fr) > max_nodes:
@@ -507,14 +580,14 @@ def split_forest(graph: dict, cfg: dict, title: str, forest: list[TreeNode], max
             if len(fr) > 1:
                 others = sorted(fr[1:] if fr[0] is max(fr, key=_subtree_size) else [t for t in fr if t is not max(fr, key=_subtree_size)],
                                 key=_subtree_size, reverse=True)
-                movable = [t for t in others if _subtree_size(t) - 1 >= min_branch]
+                movable = [t for t in others if _subtree_size(t) - 1 >= min_branch and nameable(t.person)]
                 if movable:
                     r = movable[0]
                     fr.remove(r)
-                    branch_title = f"{t_title.split(' – ')[0]} – צאצאי {disp(r.person)}"
+                    branch_title = f"{t_title.split(' – ')[0]} – צאצאי {branch_name(r)}"
                     k = 2
                     while branch_title in used_titles:
-                        branch_title = f"{t_title.split(' – ')[0]} – צאצאי {disp(r.person)} ({k})"
+                        branch_title = f"{t_title.split(' – ')[0]} – צאצאי {branch_name(r)} ({k})"
                         k += 1
                     used_titles.add(branch_title)
                     queue.append((branch_title, [r], t_title))
@@ -523,17 +596,18 @@ def split_forest(graph: dict, cfg: dict, title: str, forest: list[TreeNode], max
             #    (אחרת, כשכל המשפחה יורדת מבן אחד של השורש, העץ הראשי היה נשאר עם שתי קופסאות)
             total = sum(_subtree_size(t) for t in fr)
             cands = [n for t in fr for n in t.all_nodes()
-                     if n.depth >= 1 and _subtree_size(n) - 1 >= min_branch and total - (_subtree_size(n) - 1) >= min_branch + 2]
+                     if n.depth >= 1 and _subtree_size(n) - 1 >= min_branch and total - (_subtree_size(n) - 1) >= min_branch + 2
+                     and nameable(n.person)]
             if not cands:
                 # 3. אין ענף לפיצול: ילדים בלי ערך שהם עלים נכנסים כטקסט לקופסת ההורה, מהדור העמוק ביותר
                 if not _fold_leaves(fr):
                     break
                 continue
             node = max(cands, key=_subtree_size)
-            branch_title = f"{t_title.split(' – ')[0]} – צאצאי {disp(node.person)}"
+            branch_title = f"{t_title.split(' – ')[0]} – צאצאי {branch_name(node)}"
             k = 2
             while branch_title in used_titles:
-                branch_title = f"{t_title.split(' – ')[0]} – צאצאי {disp(node.person)} ({k})"
+                branch_title = f"{t_title.split(' – ')[0]} – צאצאי {branch_name(node)} ({k})"
                 k += 1
             used_titles.add(branch_title)
             # שורש העץ החדש: אותו אדם, עם נישואיו וילדיו; בעץ המקורי נשארת קופסה בלי ילדים ועם קישור
