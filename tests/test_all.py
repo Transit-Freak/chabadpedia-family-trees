@@ -18,7 +18,7 @@ from chabadtrees.extract import Extractor, clean_unlinked_name  # noqa: E402
 from chabadtrees.graph import build_graph  # noqa: E402
 from chabadtrees.layout import Marriage, TreeNode, layout_forest, ancestor_chart, TreeBuilder  # noqa: E402
 from chabadtrees.render import chart_wikitext, symbol_for  # noqa: E402
-from chabadtrees.pipeline import Store, fetch_pages, extract_all, graph_step, build_trees, build_ancestor_trees  # noqa: E402
+from chabadtrees.pipeline import Store, fetch_pages, extract_all, graph_step, build_trees, build_ancestor_trees, resolve_links  # noqa: E402
 from chabadtrees.existing import find_existing_trees, coverage  # noqa: E402
 
 B3 = "'" * 3
@@ -219,6 +219,7 @@ class TestPipelineWithMock(MockServerMixin, unittest.TestCase):
         cls.client = MediaWikiClient(cls.api, "test", rate_limit_seconds=0)
         cls.summary = fetch_pages(cls.client, CFG, cls.store, retry_sleep=0)
         cls.extracted = extract_all(CFG, cls.store)
+        cls.resolution = resolve_links(cls.client, CFG, cls.store)
         cls.graph = graph_step(CFG, cls.store)
 
     @classmethod
@@ -260,6 +261,17 @@ class TestPipelineWithMock(MockServerMixin, unittest.TestCase):
         self.assertEqual(anc[0]["slots"]["f"], "רבי לוי יצחק שניאורסון")
         self.assertEqual(anc[0]["slots"]["fff"], "רבי לוי יצחק שניאורסון (בן רבי ברוך שלום)")
         self.assertIn("| אבא = [[רבי לוי יצחק שניאורסון]]", anc[0]["wikitext"])
+
+    def test_redirect_links_resolve_to_canonical_title(self):
+        # ערך שמקשר ל"(אב הרבי)" (הפניה) מתמזג עם הערך האמיתי ולא יוצר אדם כפול
+        self.assertIn("רבי לוי יצחק שניאורסון (אב הרבי)", self.resolution)
+        self.assertEqual(self.resolution["רבי לוי יצחק שניאורסון (אב הרבי)"]["to"], "רבי לוי יצחק שניאורסון")
+        self.assertNotIn("רבי לוי יצחק שניאורסון (אב הרבי)", self.graph["persons"])
+        dovber = 'רבי דובער שניאורסון (אחי הרבי)'
+        fathers = [e["b"] for e in self.graph["edges"] if e["relation"] == "parent" and e["a"] == dovber and self.graph["persons"][e["b"]]["gender"] == "m"]
+        self.assertEqual(fathers, ["רבי לוי יצחק שניאורסון"])
+        trees = build_trees(self.graph, CFG)
+        self.assertNotIn("(אב הרבי)", trees[0]["wikitext"])
 
     def test_existing_trees_detected(self):
         existing = find_existing_trees(self.client, CFG)

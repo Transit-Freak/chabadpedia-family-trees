@@ -11,7 +11,7 @@ from . import __version__
 from .api import MediaWikiClient
 from .config import load_config
 from .pipeline import (Store, collect_person_titles, fetch_pages, extract_all, graph_step, build_trees,
-                       build_ancestor_trees)
+                       build_ancestor_trees, resolve_links)
 from .existing import find_existing_trees, coverage
 from .preview import render_html, screenshot
 from .review import write_review
@@ -91,6 +91,15 @@ def cmd_extract(args, cfg, store):
     return 0
 
 
+def cmd_resolve(args, cfg, store):
+    client = make_client(cfg, args)
+    res = resolve_links(client, cfg, store)
+    redirects = sum(1 for v in res.values() if v.get("redirect"))
+    missing = sum(1 for v in res.values() if not v.get("exists", True))
+    print(f"נפתרו {len(res)} יעדי קישור: {redirects} הפניות, {missing} ללא ערך")
+    return 0
+
+
 def cmd_graph(args, cfg, store):
     graph_step(cfg, store)
     return 0
@@ -133,6 +142,10 @@ def cmd_render(args, cfg, store):
 def cmd_all(args, cfg, store):
     rc = cmd_fetch(args, cfg, store)
     cmd_extract(args, cfg, store)
+    try:
+        cmd_resolve(args, cfg, store)
+    except Exception as exc:  # בלי רשת עדיין אפשר לבנות גרף מהמטמון
+        log.error("פתירת קישורים נכשלה: %s", exc)
     cmd_graph(args, cfg, store)
     try:
         cmd_existing(args, cfg, store)
@@ -192,6 +205,7 @@ def build_parser() -> argparse.ArgumentParser:
     e = sub.add_parser("extract", help="חילוץ קשרים מהדפים שבמטמון")
     e.add_argument("--llm", action="store_true", help="גם חילוץ בעזרת Claude (דורש anthropic SDK ומפתח)")
     e.set_defaults(func=cmd_extract)
+    sub.add_parser("resolve", help="פתירת יעדי קישור לכותרת הערך הקנונית (הפניות, דפים חסרים)").set_defaults(func=cmd_resolve)
     sub.add_parser("graph", help="בניית הגרף והמשפחות").set_defaults(func=cmd_graph)
     sub.add_parser("existing", help="איתור עצים קיימים באתר ובדיקת כיסוי").set_defaults(func=cmd_existing)
 

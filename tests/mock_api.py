@@ -133,11 +133,18 @@ class Handler(BaseHTTPRequestHandler):
             titles = q["titles"][0].split("|")
             out["pages"] = []
             out["normalized"] = []
+            out["redirects"] = []
             for t in titles:
                 norm = t.replace("_", " ").strip()
                 if norm != t:
                     out["normalized"].append({"from": t, "to": norm})
                 p = pages.get(norm)
+                if p is not None and "redirects" in q and p["text"].lstrip().startswith(("#הפניה", "#REDIRECT")):
+                    m = re.search(r"\[\[([^\]|]+)", p["text"])
+                    if m and m.group(1).strip() in pages:
+                        out["redirects"].append({"from": norm, "to": m.group(1).strip()})
+                        norm = m.group(1).strip()
+                        p = pages[norm]
                 if p is None:
                     out["pages"].append({"title": norm, "missing": True})
                     continue

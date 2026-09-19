@@ -190,8 +190,75 @@ def extract_all(cfg: dict, store: Store, pages: dict | None = None, use_llm: boo
     return result
 
 
+def resolve_links(client: MediaWikiClient, cfg: dict, store: Store, extracted: dict | None = None) -> dict:
+    """כל יעד קישור שהופיע בקשרים ואינו דף שנמשך – נשאל את האתר: הפניה? קיים? ונשמרת מפה לכותרת הקנונית.
+
+    כך "[[לוי יצחק שניאורסון (אב הרבי)]]" ו-"[[לוי יצחק שניאורסון (אב אדמו\"ר שליט\"א)]]" מתמזגים לאדם אחד,
+    והתיבה בעץ מקשרת לשם הערך האמיתי.
+    """
+    extracted = extracted or store.load("relations.json", {})
+    pages = store.load("pages.json", {})
+    resolution: dict[str, dict] = store.load("link_resolution.json", {})
+    # הפניות שכבר ידועות מהמשיכה
+    for req, page in pages.items():
+        if page.get("redirect_to") and page["redirect_to"] != req:
+            resolution[req] = {"to": page["redirect_to"], "exists": True, "redirect": True}
+    known = {p.get("title", t) for t, p in pages.items()} | set(pages)
+    targets = set()
+    for rel in extracted["relations"]:
+        for side in ("person", "relative"):
+            t = rel[side]
+            if not t.startswith("~") and t not in known and t not in resolution:
+                targets.add(t)
+    targets = sorted(targets)
+    log.info("פתירת %d יעדי קישור שאינם דפים שנמשכו", len(targets))
+    failed = []
+    for start in range(0, len(targets), 50):
+        batch = targets[start:start + 50]
+        try:
+            got, resolved = client.fetch_batch(batch)
+        except ApiError as exc:
+            log.error("פתירת קישורים: קבוצה נכשלה (%s) – תנוסה שוב בריצה הבאה", exc)
+            failed += batch
+            continue
+        for t in batch:
+            final = resolved.get(t)
+            if final:
+                resolution[t] = {"to": final, "exists": True, "redirect": final != t}
+            else:
+                resolution[t] = {"to": t, "exists": False, "redirect": False}
+        store.save("link_resolution.json", resolution)
+    if failed:
+        log.error("%d יעדי קישור לא נפתרו (יטופלו בריצה הבאה)", len(failed))
+    return resolution
+
+
+def apply_resolution(extracted: dict, resolution: dict) -> dict:
+    """מחליף יעדי קישור בכותרת הקנונית ומסמן אנשים שאין להם ערך."""
+    if not resolution:
+        return extracted
+    def canon(t: str) -> str:
+        seen = set()
+        while t in resolution and resolution[t].get("redirect") and t not in seen:
+            seen.add(t)
+            t = resolution[t]["to"]
+        return t
+    for rel in extracted["relations"]:
+        for side in ("person", "relative"):
+            t = rel[side]
+            if t.startswith("~"):
+                continue
+            c = canon(t)
+            rel[side] = c
+            info = resolution.get(t) or resolution.get(c)
+            if info is not None:
+                rel[f"{side}_has_article"] = bool(info.get("exists", True))
+    return extracted
+
+
 def graph_step(cfg: dict, store: Store, extracted: dict | None = None) -> dict:
     extracted = extracted or store.load("relations.json", {})
+    extracted = apply_resolution(extracted, store.load("link_resolution.json", {}))
     graph = build_graph(extracted["pages"], extracted["relations"], cfg)
     store.save("graph.json", graph)
     log.info("גרף: %d אנשים, %d קשרים, %d משפחות", len(graph["persons"]), len(graph["edges"]), len(graph["families"]))
