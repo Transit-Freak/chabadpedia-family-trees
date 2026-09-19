@@ -39,6 +39,17 @@ python -m chabadtrees render --root "רבי פלוני" --max-depth 3      # ע�
 python -m chabadtrees render --ancestors-for "רבי פלוני"           # עץ אבות לאדם מסוים
 ```
 
+### הרצה ב-GitHub Actions (בלי מחשב מקומי)
+
+ה-workflow `build-trees` (Actions → build-trees → Run workflow) מריץ את הצינור בשרתי GitHub, שיש להם גישה לאתר, ומפרסם את התוצאות בענף `results`: `results/output/` (העצים, התצוגות, דף הבדיקה), `results/calibrate.txt`, `results/run.log` ו-`results/summary.json`. מטמון הדפים נשמר בין ריצות, ו-`data/` המלא נשמר כארטיפקט לשבעה ימים.
+
+| קלט | משמעות |
+|---|---|
+| `mode` | `all` (ברירת מחדל) · `calibrate` (רק כיול) · `render` (בנייה מחדש מהמטמון בלי משיכה) |
+| `limit` | מגבלת דפים למשיכה, לבדיקה מהירה |
+| `family` | לבנות בנוסף רק משפחות שהתווית שלהן מכילה טקסט זה (הפלט ב-`results/output/family/`) |
+| `root` | עץ צאצאים מאדם מסוים (הפלט ב-`results/output/root/`) |
+
 הרצה בסביבת ענן של Claude Code: הסביבה חייבת לאפשר גישה ל-`chabadpedia.co.il` (Network access = Custom, להוסיף את הדומיין ואת `www.chabadpedia.co.il` לרשימה). בלי זה `fetch` ייכשל מיד.
 
 ## איך זה עובד
