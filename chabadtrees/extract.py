@@ -496,7 +496,9 @@ def build_aliases(known: set[str], extra: dict[str, str] | None = None) -> dict[
     for title in known:
         add(wt.display_name(title), title, "name")
         dis = wt.disambiguator(title)
-        if dis and not dis.startswith(("בן ", "בת ", "אשת ", "אחי ", "אבי ", "נכד ")):
+        # הבהרות יחס ("אב אדמו\"ר שליט\"א", "בן אדמו\"ר המהר\"ש", "נין אדמו\"ר הצמח צדק") אינן כינויים
+        if dis and not dis.startswith(("בן ", "בת ", "אשת ", "אחי ", "אחות ", "אבי ", "אב ", "אם ", "נכד ", "נכדת ", "נין ",
+                                       "חתן ", "כלת ", "בעל ", "סב ", "סבת ", "דוד ", "גיס ")):
             add(dis, title, "nick")
             for prefix in ("אדמו\"ר ", "הרב ", "ר' "):
                 if dis.startswith(prefix):
