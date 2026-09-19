@@ -123,26 +123,45 @@ def box_content(chart: Chart, bid: str, graph: dict, cfg: dict, with_refs: bool 
     return label
 
 
+def row_tiles(chart: Chart, r: int, box_w: int = 3) -> list:
+    """רשימת המרצפות בשורה: None (ריק), ("box", id) במרצפת הראשונה של תיבה, "occupied" לשתי הבאות, או Cell."""
+    tiles: list = [None] * chart.width
+    for c in range(chart.width):
+        cell = chart.cells.get((r, c))
+        if cell is None:
+            continue
+        if cell.kind == "box":
+            start = c - box_w // 2
+            for t in range(start, start + box_w):
+                if 0 <= t < chart.width:
+                    tiles[t] = "occupied"
+            tiles[max(start, 0)] = ("box", cell.ref)
+        else:
+            tiles[c] = cell
+    return tiles
+
+
 def chart_wikitext(chart: Chart, graph: dict, cfg: dict, with_refs: bool = True, existing: dict | None = None) -> str:
     ccfg = cfg["chart"]
+    box_w = ccfg.get("box_tiles", 3)
+    empty = ccfg["symbols"].get("empty", " ")
     lines = [f"{{{{{ccfg['start']}}}}}"]
     for r in range(chart.height):
+        tiles = row_tiles(chart, r, box_w)
+        last = max((i for i, t in enumerate(tiles) if t is not None), default=-1)
         cells, params = [], []
-        last_used = -1
-        for c in range(chart.width):
-            if (r, c) in chart.cells:
-                last_used = c
-        for c in range(last_used + 1):
-            cell = chart.cells.get((r, c))
-            if cell is None:
-                cells.append(" ")
-            elif cell.kind == "box":
-                cells.append(f" {cell.ref} ")
-                params.append(f"{cell.ref}={box_content(chart, cell.ref, graph, cfg, with_refs, existing)}")
-            elif cell.kind in ("marriage", "mline"):
-                cells.append(symbol_for(cell.dirs, ccfg, cell.kind))
+        for t in tiles[:last + 1]:
+            if t is None:
+                cells.append(empty)
+            elif t == "occupied":
+                continue
+            elif isinstance(t, tuple):
+                cells.append(t[1])
+                params.append(f"{t[1]}={box_content(chart, t[1], graph, cfg, with_refs, existing)}")
+            elif t.kind in ("marriage", "mline"):
+                cells.append(symbol_for(t.dirs, ccfg, t.kind))
             else:
-                cells.append(symbol_for(cell.dirs, ccfg))
+                cells.append(symbol_for(t.dirs, ccfg))
         if not cells:
             continue
         line = f"{{{{{ccfg['row']}|" + "|".join(cells)

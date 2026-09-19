@@ -141,44 +141,56 @@ class TestGraph(unittest.TestCase):
 
 class TestLayout(unittest.TestCase):
     def grid(self, chart):
+        from chabadtrees.render import row_tiles
         out = []
         for r in range(chart.height):
             row = []
-            for c in range(chart.width):
-                cell = chart.cells.get((r, c))
-                row.append("·" if cell is None else ("B" if cell.kind == "box" else symbol_for(cell.dirs, CFG["chart"], cell.kind)))
+            for t in row_tiles(chart, r):
+                if t is None:
+                    row.append("·")
+                elif t == "occupied" or isinstance(t, tuple):
+                    row.append("B")
+                else:
+                    row.append(symbol_for(t.dirs, CFG["chart"], t.kind))
             out.append("".join(row))
         return out
 
-    def test_single_marriage(self):
+    def test_single_marriage_odd_children(self):
         leaf = lambda n: TreeNode(n, [], 1)
         root = TreeNode("P", [Marriage("S", [leaf("a"), leaf("b"), leaf("c")])], 0)
         g = self.grid(layout_forest([root], {}))
-        # הצומת ד בדיוק מעל הילד האמצעי; הילד הראשון מקבל . והאחרון ,
-        self.assertEqual(g[0], "B~ד~B")
-        self.assertEqual(g[1], ".-+-,")
-        self.assertEqual(g[2], "B·B·B")
+        # תיבה = 3 מרצפות; הצומת ד מעל הילד האמצעי; הילד הראשון מקבל . והאחרון ,
+        self.assertEqual(g[0], "··BBBדBBB··")
+        self.assertEqual(g[1], "·.---+---,·")
+        self.assertEqual(g[2], "BBB·BBB·BBB")
 
-    def test_only_verified_symbols(self):
-        leaf = lambda n, d=1: TreeNode(n, [], d)
-        c2 = TreeNode("c2", [Marriage("s2", [leaf("g1", 2), leaf("g2", 2)])], 1)
-        root = TreeNode("P", [Marriage("S", [leaf("c1"), c2, leaf("c3"), leaf("c4")])], 0)
-        g = "".join(self.grid(layout_forest([root], {})))
-        self.assertTrue(set(g) <= set("B·!-~+.,דז"), g)
+    def test_even_children_use_t_up(self):
+        leaf = lambda n: TreeNode(n, [], 1)
+        root = TreeNode("P", [Marriage("S", [leaf("a"), leaf("b")])], 0)
+        g = self.grid(layout_forest([root], {}))
+        self.assertEqual(g[0], "BBBדBBB")
+        self.assertEqual(g[1], "·.-^-,·")
+        self.assertEqual(g[2], "BBB·BBB")
 
-    def test_two_marriages_no_crossing(self):
+    def test_two_marriages(self):
         leaf = lambda n: TreeNode(n, [], 1)
         root = TreeNode("P", [Marriage("S1", [leaf("a1"), leaf("a2")]), Marriage("S2", [leaf("b1")])], 0)
         g = self.grid(layout_forest([root], {}))
-        self.assertEqual(g[0], "B~ד~B~ד~B")
-        self.assertEqual(g[-1].count("B"), 3)
-        self.assertTrue(set("".join(g)) <= set("B·!-~+.,דז"), g)
+        self.assertEqual(g[0], "BBBדBBBדBBB")
+        self.assertEqual(g[-1].count("B"), 9)
+        self.assertTrue(set("".join(g)) <= set("B·!-~+.,ד ז^()'`"), g)
 
-    def test_vertical_symbol_is_not_pipe(self):
-        root = TreeNode("P", [Marriage(None, [TreeNode("c", [], 1)])], 0)
-        text = chart_wikitext(layout_forest([root], {}), {"persons": {"P": {"name": "P", "title": None}, "c": {"name": "c", "title": None}}, "edges": []}, CFG)
-        self.assertIn("{{עץ משפחה|!}}", text)
-        self.assertIn("{{עץ משפחה/התחלה}}", text)
+    def test_wikitext_tiles(self):
+        leaf = lambda n: TreeNode(n, [], 1)
+        root = TreeNode("P", [Marriage("S", [leaf("a"), leaf("b"), leaf("c")])], 0)
+        persons = {k: {"name": k, "title": None} for k in "PSabc"}
+        text = chart_wikitext(layout_forest([root], {}), {"persons": persons, "edges": []}, CFG)
+        lines = text.split("\n")
+        self.assertEqual(lines[0], "{{עץ משפחה/התחלה}}")
+        import re as _re
+        self.assertRegex(lines[1], r"^\{\{עץ משפחה\| \| \|B\d+\|ד\|B\d+\|")      # 2 ריקים, תיבה (3 מרצפות), ד, תיבה
+        self.assertEqual(lines[2], "{{עץ משפחה| |.|-|-|-|+|-|-|-|,}}")
+        self.assertRegex(lines[3], r"^\{\{עץ משפחה\|B\d+\| \|B\d+\| \|B\d+\|")
         self.assertNotIn("|y|", text)
 
 
@@ -241,7 +253,7 @@ class TestPipelineWithMock(MockServerMixin, unittest.TestCase):
         for line in t["wikitext"].split("\n"):
             if line.startswith("{{עץ משפחה|"):
                 cells = [c.strip() for c in wt.split_top(line[len("{{עץ משפחה|"):].rstrip("}")) if "=" not in c]
-                bad = [c for c in cells if c and not c.startswith("B") and c not in ("!", "-", "~", "+", ".", ",", "ד", "ז")]
+                bad = [c for c in cells if c and not c.startswith("B") and c not in ("!", "-", "~", "+", ".", ",", "ד", "ז", "^", "(", ")", "'", "`")]
                 self.assertEqual(bad, [], line[:80])
         self.assertNotIn("|B", t["wikitext"].split("{{עץ משפחה/התחלה}}")[0])
         anc = build_ancestor_trees(self.graph, CFG, for_person='רבי מנחם מענדל שניאורסון (אדמו"ר שליט"א)')

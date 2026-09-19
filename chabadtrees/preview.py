@@ -46,26 +46,36 @@ def render_html(chart: Chart, graph: dict, cfg: dict, title: str, subtitle: str 
             refs.append(r)
         return refs.index(r) + 1
 
+    from .render import row_tiles
+    box_w = cfg["chart"].get("box_tiles", 3)
     rows = []
     for r in range(chart.height):
+        tiles = row_tiles(chart, r, box_w)
+        # הטבלה עצמה LTR והמרצפות הפוכות: המרצפת הלוגית 0 מוצגת מימין, כמו בוויקי RTL
+        order = list(range(chart.width - 1, -1, -1)) if rtl else list(range(chart.width))
         tds = []
-        # הטבלה עצמה LTR והעמודות הפוכות: העמודה הלוגית 0 מוצגת מימין, כמו בוויקי RTL
-        for c in (range(chart.width - 1, -1, -1) if rtl else range(chart.width)):
-            cell = chart.cells.get((r, c))
-            if cell is None:
+        skip = 0
+        for c in order:
+            t = tiles[c]
+            if t == "occupied":
+                # ב-RTL פוגשים קודם את המרצפת האחרונה של התיבה: נפלוט את התיבה שם ונדלג על השאר
+                if rtl and (c - 1 < 0 or tiles[c - 1] != "occupied") and False:
+                    pass
+                continue
+            if isinstance(t, tuple):
+                info = chart.boxes[t[1]]
+                content = box_content(chart, t[1], graph, cfg)
+                tds.append(f'<td class="box {info["role"]}" colspan="{box_w}"><div>{_wiki_to_html(content, cfg, ref_index)}</div></td>')
+            elif t is None:
                 tds.append("<td></td>")
-            elif cell.kind == "box":
-                info = chart.boxes[cell.ref]
-                content = box_content(chart, cell.ref, graph, cfg)
-                tds.append(f'<td class="box {info["role"]}"><div>{_wiki_to_html(content, cfg, ref_index)}</div></td>')
             else:
+                cell = t
                 dirs = set(cell.dirs)
                 parts = []
                 if "u" in dirs:
                     parts.append('<div class="u"></div>')
                 if "d" in dirs:
                     parts.append('<div class="d"></div>')
-                # לוגי → פיזי: ב-RTL התא הקודם ברצף (l) נמצא פיזית מימין
                 left_phys, right_phys = ("r", "l") if rtl else ("l", "r")
                 if left_phys in dirs:
                     parts.append('<div class="pl"></div>')

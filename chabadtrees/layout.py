@@ -59,7 +59,7 @@ class Chart:
 
     def put(self, row: int, col: int, cell: Cell) -> None:
         self.cells[(row, col)] = cell
-        self.width = max(self.width, col + 1)
+        self.width = max(self.width, col + (2 if cell.kind == "box" else 1))
         self.height = max(self.height, row + 1)
 
 
@@ -182,6 +182,7 @@ def layout_forest(roots: list[TreeNode], box_ids: dict, gap: int = 1, spouse_sty
                 chart.add_line(r, c + col, cell.dirs)
             else:
                 chart.put(r, c + col, cell)
+        chart.width = max(chart.width, col + block.width)
         col += block.width + gap
     return chart
 
@@ -213,40 +214,50 @@ def _box_id(box_ids: dict, chart: Chart, person: str, role: str, node: TreeNode)
     return bid
 
 
+BOX_W = 3   # תיבת טקסט = 3 מרצפות; הקווים מתחברים למרצפת האמצעית
+
+
 def _block(node: TreeNode, conn_rows: dict[int, int], box_ids: dict, chart: Chart, spouse_boxes: bool = True,
            spouse_boxes_below_root: bool = False) -> Block:
-    """בלוק של אדם: שורת בני הזוג, שורות החיבור, ובלוקי הילדים.
+    """בלוק של אדם, במרצפות: שורת בני הזוג, שורות החיבור, ובלוקי הילדים.
 
-    קופסאות בני זוג: ``A |~|ד|~| B`` (כמו באתר). בלי קופסאות (inline) – רק הקופסה של האדם, והילדים
-    יורדים ממנה ישירות. הצומת/הקופסה ממוקמים בדיוק מעל הילד האמצעי, כך שתא החיבור הוא ``+``
-    (או ``!`` לילד יחיד) ואין צורך בסמלי T שלא אומתו.
+    זוג: ``A |ד| B`` (כמו בתיעוד התבנית); בלי קופסאות (inline) – רק הקופסה של האדם.
+    הצומת ממוקם מעל הילד האמצעי (מספר אי-זוגי → ``+``; זוגי → ``^`` בין שני האמצעיים).
     """
     spouses = [m.spouse for m in node.marriages if m.spouse]
-    partner: list[tuple[str, str | None]] = []
-    marriage_offset: dict[int, int] = {}
+    partner: list[tuple[str, str | None, int]] = []      # (kind, ref, width)
     if spouse_boxes and len(spouses) >= 2:
-        partner = [("box", spouses[0]), ("mline", None), ("marriage", None), ("mline", None), ("box", node.person),
-                   ("mline", None), ("marriage", None), ("mline", None), ("box", spouses[1])]
-        p_offset = 4
-        junction = {spouses[0]: 2, spouses[1]: 6}
+        partner = [("box", spouses[0], BOX_W), ("marriage", None, 1), ("box", node.person, BOX_W),
+                   ("marriage", None, 1), ("box", spouses[1], BOX_W)]
         extra = spouses[2:]
     elif spouse_boxes and len(spouses) == 1:
-        partner = [("box", node.person), ("mline", None), ("marriage", None), ("mline", None), ("box", spouses[0])]
-        p_offset = 0
-        junction = {spouses[0]: 2}
+        partner = [("box", node.person, BOX_W), ("marriage", None, 1), ("box", spouses[0], BOX_W)]
         extra = []
     else:
-        partner = [("box", node.person)]
-        p_offset = 0
-        junction = {}
+        partner = [("box", node.person, BOX_W)]
         extra = []
-    for sp in extra:  # נישואין שלישיים ואילך
-        partner += [("mline", None), ("marriage", None), ("mline", None), ("box", sp)]
-        junction[sp] = len(partner) - 3
+    for sp in extra:
+        partner += [("marriage", None, 1), ("box", sp, BOX_W)]
+    # מיקומי מרכז (במרצפות, יחסית לתחילת השורה); כל צומת שייך לבן הזוג שסמוך לו
+    p_offset = 0
+    junction: dict[str, int] = {}
+    tile = 0
+    for k, (kind, ref, w) in enumerate(partner):
+        if kind == "box" and ref == node.person:
+            p_offset = tile + 1
+        elif kind == "marriage":
+            prev_ref = partner[k - 1][1] if k > 0 and partner[k - 1][0] == "box" else None
+            next_ref = partner[k + 1][1] if k + 1 < len(partner) and partner[k + 1][0] == "box" else None
+            owner = prev_ref if prev_ref not in (None, node.person) else next_ref
+            if owner is not None:
+                junction[owner] = tile
+        tile += w
+    partner_width = tile
+    marriage_offset: dict[int, int] = {}
     for i, m in enumerate(node.marriages):
         marriage_offset[i] = junction.get(m.spouse, p_offset)
 
-    # בלוקים של ילדים, לפי סדר הצמתים בשורת בני הזוג
+    # בלוקים של ילדים, לפי סדר הצמתים
     groups: dict[int, list[tuple[Block, int]]] = {}
     col = 0
     placed_any = False
@@ -267,16 +278,19 @@ def _block(node: TreeNode, conn_rows: dict[int, int], box_ids: dict, chart: Char
             placed_any = True
     children_width = col
 
-    # מיקום שורת בני הזוג: הצומת של הנישואין הראשונים-עם-ילדים בדיוק מעל הילד האמצעי שלהם
-    def median_col(blocks):
+    def anchor_for(blocks) -> int:
         cols = sorted(left + b.attach_col for b, left in blocks)
-        return cols[(len(cols) - 1) // 2]
+        n = len(cols)
+        if n % 2 == 1:
+            return cols[n // 2]
+        mid = cols[n // 2 - 1] + cols[n // 2]
+        return mid // 2 if mid % 2 == 0 else cols[n // 2 - 1]
 
     ordered = sorted(groups.items(), key=lambda kv: min(left + b.attach_col for b, left in kv[1]))
     L = 0
     if ordered:
         first_i = ordered[0][0]
-        L = median_col(ordered[0][1]) - marriage_offset[first_i]
+        L = anchor_for(ordered[0][1]) - marriage_offset[first_i]
         for (i, blocks_i), (j, blocks_j) in zip(ordered, ordered[1:]):
             if marriage_offset[j] > marriage_offset[i]:
                 last_i = max(left + b.attach_col for b, left in blocks_i)
@@ -284,18 +298,19 @@ def _block(node: TreeNode, conn_rows: dict[int, int], box_ids: dict, chart: Char
     shift = 0
     if L < 0:
         shift, L = -L, 0
-    width = max(children_width + shift, L + len(partner))
+    width = max(children_width + shift, L + partner_width)
     block_cells: dict = {}
-    for k, (kind, ref) in enumerate(partner):
-        c = L + k
+    tile = L
+    for kind, ref, w in partner:
         if kind == "box":
             role = "member" if ref == node.person else "spouse"
             bid = _box_id(box_ids, chart, ref, role, node)
-            block_cells[(0, c)] = Cell("box", ref=bid)
+            block_cells[(0, tile + 1)] = Cell("box", ref=bid)
         elif kind == "marriage":
-            block_cells[(0, c)] = Cell("marriage", dirs={"l", "r"})
+            block_cells[(0, tile)] = Cell("marriage", dirs={"l", "r"})
         else:
-            block_cells[(0, c)] = Cell("mline", dirs={"l", "r"})
+            block_cells[(0, tile)] = Cell("mline", dirs={"l", "r"})
+        tile += w
     rows_here = conn_rows[node.depth]
 
     def add_line(r, c, dirs):
@@ -307,7 +322,7 @@ def _block(node: TreeNode, conn_rows: dict[int, int], box_ids: dict, chart: Char
 
     for seg_index, (i, blocks) in enumerate(ordered):
         anchor = L + marriage_offset[i]
-        if block_cells[(0, anchor)].kind == "marriage":
+        if block_cells.get((0, anchor)) is not None and block_cells[(0, anchor)].kind == "marriage":
             block_cells[(0, anchor)].dirs.add("d")
         child_cols = sorted(left + shift + b.attach_col for b, left in blocks)
         seg_row = 1 + seg_index
@@ -392,10 +407,10 @@ def ancestor_chart(graph: dict, person: str, generations: int, box_ids: dict) ->
         top -= 1
 
     chart = Chart()
-    # עמודות: בשורה העליונה כל זוג תופס 5 תאים (A ~ ד ~ B) + רווח 2
+    # מרצפות: בשורה העליונה כל זוג תופס 7 מרצפות (A ד B) + רווח 2; מרכזי הקופסאות ב-1 וב-5
     cols: dict[str, int] = {}
     for i in range(2 ** top):
-        cols[_slot_key(top, i)] = 7 * (i // 2) + 4 * (i % 2)
+        cols[_slot_key(top, i)] = 9 * (i // 2) + 1 + 4 * (i % 2)
     for gen in range(top - 1, -1, -1):
         for i in range(2 ** gen):
             key = _slot_key(gen, i)
@@ -427,7 +442,7 @@ def ancestor_chart(graph: dict, person: str, generations: int, box_ids: dict) ->
                 pr = row_of[gen + 1]
                 if has_f and has_m:
                     mid = c
-                    for x in range(fc + 1, mc):
+                    for x in range(fc + 2, mc - 1):          # מחוץ לקופסאות (3 מרצפות כל אחת)
                         if x == mid:
                             chart.put(pr, x, Cell("marriage", dirs={"l", "r", "d"}))
                         else:
