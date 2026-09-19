@@ -31,6 +31,7 @@ td.line>div.d{width:2px;height:50%;bottom:0;left:calc(50% - 1px)}
 td.line>div.pl{height:2px;width:50%;left:0;top:calc(50% - 1px)}
 td.line>div.pr{height:2px;width:50%;right:0;top:calc(50% - 1px)}
 td.line.marriage>div.dot{width:6px;height:6px;border-radius:3px;left:calc(50% - 3px);top:calc(50% - 3px)}
+td.line.mline>div.pl,td.line.mline>div.pr,td.line.marriage>div.pl,td.line.marriage>div.pr{height:4px;top:calc(50% - 2px);background:repeating-linear-gradient(180deg,#333 0 1px,#fff 1px 3px,#333 3px 4px)}
 small{color:#444;font-weight:normal}
 ol.refs{font-size:12px;color:#333}
 sup{font-size:9px;color:#06c}

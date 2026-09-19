@@ -165,13 +165,18 @@ class Block:
     marriage_cols: dict            # אינדקס נישואין -> עמודת הצומת
 
 
-def layout_forest(roots: list[TreeNode], box_ids: dict, gap: int = 1) -> Chart:
+def layout_forest(roots: list[TreeNode], box_ids: dict, gap: int = 1, spouse_style: str = "inline",
+                  root_spouse_boxes: bool = True) -> Chart:
     """מסדר כמה עצים זה ליד זה. box_ids: person id -> box id (מתמלא תוך כדי)."""
+    if spouse_style != "boxes":
+        for root in roots:
+            merge_marriages_inline(root)
     conn_rows = generation_connector_rows(roots)
     chart = Chart()
     col = 0
     for root in roots:
-        block = _block(root, conn_rows, box_ids, chart)
+        boxes_below = spouse_style == "boxes"
+        block = _block(root, conn_rows, box_ids, chart, spouse_boxes=(root_spouse_boxes or boxes_below), spouse_boxes_below_root=boxes_below)
         for (r, c), cell in block.cells.items():
             if cell.kind == "line":
                 chart.add_line(r, c + col, cell.dirs)
@@ -191,6 +196,16 @@ def generation_connector_rows(roots: list[TreeNode]) -> dict[int, int]:
     return rows
 
 
+def merge_marriages_inline(node: TreeNode) -> None:
+    """בסגנון inline הילדים של כל הנישואין יורדים מקופסת האדם – מאחדים לנישואין אחד לצורך הסידור."""
+    for n in node.all_nodes():
+        if n.depth == 0:
+            continue
+        kids = [c for m in n.marriages for c in m.children]
+        spouses = [m.spouse for m in n.marriages if m.spouse]
+        n.marriages = [Marriage(spouses[0] if spouses else None, kids)] + [Marriage(sp, []) for sp in spouses[1:]]
+
+
 def _box_id(box_ids: dict, chart: Chart, person: str, role: str, node: TreeNode) -> str:
     bid = f"B{len(chart.boxes) + 1}"
     chart.boxes[bid] = {"person": person, "role": role, "node": node}
@@ -198,37 +213,40 @@ def _box_id(box_ids: dict, chart: Chart, person: str, role: str, node: TreeNode)
     return bid
 
 
-def _block(node: TreeNode, conn_rows: dict[int, int], box_ids: dict, chart: Chart) -> Block:
-    # שורת בני הזוג: [S1, y, P, y, S2] / [P, y, S1] / [P]
+def _block(node: TreeNode, conn_rows: dict[int, int], box_ids: dict, chart: Chart, spouse_boxes: bool = True,
+           spouse_boxes_below_root: bool = False) -> Block:
+    """בלוק של אדם: שורת בני הזוג, שורות החיבור, ובלוקי הילדים.
+
+    קופסאות בני זוג: ``A |~|ד|~| B`` (כמו באתר). בלי קופסאות (inline) – רק הקופסה של האדם, והילדים
+    יורדים ממנה ישירות. הצומת/הקופסה ממוקמים בדיוק מעל הילד האמצעי, כך שתא החיבור הוא ``+``
+    (או ``!`` לילד יחיד) ואין צורך בסמלי T שלא אומתו.
+    """
     spouses = [m.spouse for m in node.marriages if m.spouse]
-    partner: list[tuple[str, str | None]] = []       # (kind, ref)
+    partner: list[tuple[str, str | None]] = []
     marriage_offset: dict[int, int] = {}
-    p_offset = 0
-    if len(spouses) >= 2:
-        partner = [("box", spouses[0]), ("marriage", None), ("box", node.person), ("marriage", None), ("box", spouses[1])]
-        p_offset = 2
+    if spouse_boxes and len(spouses) >= 2:
+        partner = [("box", spouses[0]), ("mline", None), ("marriage", None), ("mline", None), ("box", node.person),
+                   ("mline", None), ("marriage", None), ("mline", None), ("box", spouses[1])]
+        p_offset = 4
+        junction = {spouses[0]: 2, spouses[1]: 6}
         extra = spouses[2:]
-    elif len(spouses) == 1:
-        partner = [("box", node.person), ("marriage", None), ("box", spouses[0])]
+    elif spouse_boxes and len(spouses) == 1:
+        partner = [("box", node.person), ("mline", None), ("marriage", None), ("mline", None), ("box", spouses[0])]
+        p_offset = 0
+        junction = {spouses[0]: 2}
         extra = []
     else:
         partner = [("box", node.person)]
+        p_offset = 0
+        junction = {}
         extra = []
+    for sp in extra:  # נישואין שלישיים ואילך
+        partner += [("mline", None), ("marriage", None), ("mline", None), ("box", sp)]
+        junction[sp] = len(partner) - 3
     for i, m in enumerate(node.marriages):
-        if m.spouse is None:
-            marriage_offset[i] = p_offset
-        elif m.spouse == (spouses[0] if spouses else None):
-            marriage_offset[i] = 1 if len(spouses) == 1 else 1
-        elif len(spouses) >= 2 and m.spouse == spouses[1]:
-            marriage_offset[i] = 3
-        else:
-            marriage_offset[i] = p_offset
-    for sp in extra:  # נישואין שלישיים ואילך – קופסה נוספת אחרי תא קו
-        partner += [("line_h", None), ("marriage", None), ("box", sp)]
-        idx = [m.spouse for m in node.marriages].index(sp)
-        marriage_offset[idx] = len(partner) - 2
+        marriage_offset[i] = junction.get(m.spouse, p_offset)
 
-    # בלוקים של ילדים, לפי נישואין (כל נישואין שומרים את הבלוקים שלהם)
+    # בלוקים של ילדים, לפי סדר הצמתים בשורת בני הזוג
     groups: dict[int, list[tuple[Block, int]]] = {}
     col = 0
     placed_any = False
@@ -239,7 +257,7 @@ def _block(node: TreeNode, conn_rows: dict[int, int], box_ids: dict, chart: Char
             continue
         groups[i] = []
         for c in m.children:
-            b = _block(c, conn_rows, box_ids, chart)
+            b = _block(c, conn_rows, box_ids, chart, spouse_boxes=spouse_boxes_below_root, spouse_boxes_below_root=spouse_boxes_below_root)
             if placed_any:
                 col += 1
             left = col
@@ -248,17 +266,21 @@ def _block(node: TreeNode, conn_rows: dict[int, int], box_ids: dict, chart: Char
             col = left + b.width
             placed_any = True
     children_width = col
-    spans = {i: (min(left + b.attach_col for b, left in blocks), max(left + b.attach_col for b, left in blocks))
-             for i, blocks in groups.items()}
 
-    # מיקום שורת בני הזוג: כל צומת נישואין מעל מרכז הילדים שלו, בממוצע
-    desired = [((f + l) / 2) - marriage_offset[i] for i, (f, l) in spans.items()]
-    L = round(sum(desired) / len(desired)) if desired else 0
-    ordered = sorted(spans.items(), key=lambda kv: kv[1][0])
-    # שני נישואין עם ילדים: הצומת המאוחר חייב להיות מימין (לוגית) לקבוצה המוקדמת, אחרת הקווים נחתכים
-    for (i, (f, l)), (j, (f2, l2)) in zip(ordered, ordered[1:]):
-        if marriage_offset[j] > marriage_offset[i]:
-            L = max(L, l + 1 - marriage_offset[j])
+    # מיקום שורת בני הזוג: הצומת של הנישואין הראשונים-עם-ילדים בדיוק מעל הילד האמצעי שלהם
+    def median_col(blocks):
+        cols = sorted(left + b.attach_col for b, left in blocks)
+        return cols[(len(cols) - 1) // 2]
+
+    ordered = sorted(groups.items(), key=lambda kv: min(left + b.attach_col for b, left in kv[1]))
+    L = 0
+    if ordered:
+        first_i = ordered[0][0]
+        L = median_col(ordered[0][1]) - marriage_offset[first_i]
+        for (i, blocks_i), (j, blocks_j) in zip(ordered, ordered[1:]):
+            if marriage_offset[j] > marriage_offset[i]:
+                last_i = max(left + b.attach_col for b, left in blocks_i)
+                L = max(L, last_i + 1 - marriage_offset[j])
     shift = 0
     if L < 0:
         shift, L = -L, 0
@@ -273,7 +295,7 @@ def _block(node: TreeNode, conn_rows: dict[int, int], box_ids: dict, chart: Char
         elif kind == "marriage":
             block_cells[(0, c)] = Cell("marriage", dirs={"l", "r"})
         else:
-            block_cells[(0, c)] = Cell("line", dirs={"l", "r"})
+            block_cells[(0, c)] = Cell("mline", dirs={"l", "r"})
     rows_here = conn_rows[node.depth]
 
     def add_line(r, c, dirs):
@@ -283,11 +305,11 @@ def _block(node: TreeNode, conn_rows: dict[int, int], box_ids: dict, chart: Char
         else:
             cell.dirs |= set(dirs)
 
-    for seg_index, (i, (f, l)) in enumerate(ordered):
+    for seg_index, (i, blocks) in enumerate(ordered):
         anchor = L + marriage_offset[i]
         if block_cells[(0, anchor)].kind == "marriage":
             block_cells[(0, anchor)].dirs.add("d")
-        child_cols = sorted(left + shift + b.attach_col for b, left in groups[i])
+        child_cols = sorted(left + shift + b.attach_col for b, left in blocks)
         seg_row = 1 + seg_index
         for r in range(1, seg_row):
             add_line(r, anchor, {"u", "d"})
@@ -323,7 +345,11 @@ def _block(node: TreeNode, conn_rows: dict[int, int], box_ids: dict, chart: Char
 # --------------------------------------------------------------------------- עץ אבות (לאדם אחד)
 def ancestor_chart(graph: dict, person: str, generations: int, box_ids: dict) -> tuple[Chart, dict]:
     """גריד של אבות: האדם למטה, מעליו הוריו, סביו וכו'. מחזיר (chart, slots) כאשר slots ממפה
-    מפתח כמו 'ff' (אבי האב) למזהה אדם – לשימוש בתבנית העץ לאדם אחד."""
+    מפתח כמו 'ff' (אבי האב) למזהה אדם – לשימוש בתבנית העץ לאדם אחד.
+
+    זוג הורים מצויר ``A |~|ד|~| B`` והילד בדיוק מתחת ל-ד. כשידוע רק הורה אחד הוא ממוקם ישירות מעל הילד
+    (קו ``!``), כך שלא נדרשים סמלי פינה שלא אומתו בתבנית.
+    """
     persons, edges = graph["persons"], graph["edges"]
     min_conf = 0.5
 
@@ -341,7 +367,6 @@ def ancestor_chart(graph: dict, person: str, generations: int, box_ids: dict) ->
                 father = e["b"]
             elif mother is None:
                 mother = e["b"]
-        # סבים עם צד ידוע – משלימים כשאין קישור דרך ההורה
         return father, mother
 
     slots: dict[str, str | None] = {"self": person}
@@ -355,66 +380,61 @@ def ancestor_chart(graph: dict, person: str, generations: int, box_ids: dict) ->
             slots[k + "m"] = m
             new_keys += [k + "f", k + "m"]
         keys = new_keys
-    # סבים שהוזכרו ישירות ("סבו מצד אביו") כשההורה חסר
     for e in edges:
         if e["relation"] == "grandparent" and e["a"] == person and e["confidence"] >= min_conf and e.get("side"):
             key = ("f" if e["side"] == "father" else "m") + ("f" if persons[e["b"]]["gender"] != "f" else "m")
             if slots.get(key) is None:
                 slots[key] = e["b"]
 
-    chart = Chart()
+    # גיזום דורות ריקים מלמעלה
     top = generations
-    # רוחב: 2**top קופסאות בשורה העליונה, כל זוג תופס 3 תאים + רווח 1 => עמודה של קופסה k: 4*(k//2) + 2*(k%2)
-    def col_of(gen: int, index: int) -> int:
-        if gen == top:
-            return 4 * (index // 2) + 2 * (index % 2)
-        # מרכז בין שתי הקופסאות של ההורים
-        return (col_of(gen + 1, 2 * index) + col_of(gen + 1, 2 * index + 1)) // 2
+    while top > 1 and not any(slots.get(_slot_key(top, i)) for i in range(2 ** top)):
+        top -= 1
 
+    chart = Chart()
+    # עמודות: בשורה העליונה כל זוג תופס 5 תאים (A ~ ד ~ B) + רווח 2
+    cols: dict[str, int] = {}
+    for i in range(2 ** top):
+        cols[_slot_key(top, i)] = 7 * (i // 2) + 4 * (i % 2)
+    for gen in range(top - 1, -1, -1):
+        for i in range(2 ** gen):
+            key = _slot_key(gen, i)
+            fk, mk = _slot_key(gen + 1, 2 * i), _slot_key(gen + 1, 2 * i + 1)
+            fc, mc = cols[fk], cols[mk]
+            has_f, has_m = bool(slots.get(fk)), bool(slots.get(mk))
+            if has_f and has_m:
+                cols[key] = (fc + mc) // 2
+            elif has_f:
+                cols[key] = fc
+            elif has_m:
+                cols[key] = mc
+            else:
+                cols[key] = (fc + mc) // 2
     row_of = {gen: 2 * (top - gen) for gen in range(top + 1)}
     for gen in range(top, -1, -1):
-        for index in range(2 ** gen):
-            key = _slot_key(gen, index)
+        for i in range(2 ** gen):
+            key = _slot_key(gen, i)
             pid = slots.get(key)
-            r, c = row_of[gen], col_of(gen, index)
+            r, c = row_of[gen], cols[key]
             if pid:
                 bid = f"B{len(chart.boxes) + 1}"
                 chart.boxes[bid] = {"person": pid, "role": "member" if key == "self" else "ancestor", "node": None, "slot": key}
                 chart.put(r, c, Cell("box", ref=bid))
-            if gen < top:
-                # חיבור מההורים (gen+1) לילד (gen)
-                fc, mc = col_of(gen + 1, 2 * index), col_of(gen + 1, 2 * index + 1)
-                fk, mk = _slot_key(gen + 1, 2 * index), _slot_key(gen + 1, 2 * index + 1)
+            if gen < top and pid:
+                fk, mk = _slot_key(gen + 1, 2 * i), _slot_key(gen + 1, 2 * i + 1)
+                fc, mc = cols[fk], cols[mk]
                 has_f, has_m = bool(slots.get(fk)), bool(slots.get(mk))
-                if not pid or not (has_f or has_m):
-                    continue
                 pr = row_of[gen + 1]
-                mid = (fc + mc) // 2
                 if has_f and has_m:
+                    mid = c
                     for x in range(fc + 1, mc):
-                        chart.add_line(pr, x, {"l", "r"})
-                    chart.cells[(pr, mid)] = Cell("marriage", dirs={"l", "r", "d"})
-                    chart.add_line(pr + 1, mid, {"u", "d"}) if mid == c else None
-                    if mid != c:
-                        lo, hi = min(mid, c), max(mid, c)
-                        for x in range(lo, hi + 1):
-                            dirs = set()
-                            if x > lo: dirs.add("l")
-                            if x < hi: dirs.add("r")
-                            if x == mid: dirs.add("u")
-                            if x == c: dirs.add("d")
-                            chart.add_line(pr + 1, x, dirs)
-                else:
-                    src = fc if has_f else mc
-                    lo, hi = min(src, c), max(src, c)
-                    for x in range(lo, hi + 1):
-                        dirs = set()
-                        if x > lo: dirs.add("l")
-                        if x < hi: dirs.add("r")
-                        if x == src: dirs.add("u")
-                        if x == c: dirs.add("d")
-                        if lo == hi: dirs = {"u", "d"}
-                        chart.add_line(pr + 1, x, dirs)
+                        if x == mid:
+                            chart.put(pr, x, Cell("marriage", dirs={"l", "r", "d"}))
+                        else:
+                            chart.put(pr, x, Cell("mline", dirs={"l", "r"}))
+                    chart.add_line(pr + 1, mid, {"u", "d"})
+                elif has_f or has_m:
+                    chart.add_line(pr + 1, c, {"u", "d"})
     return chart, slots
 
 

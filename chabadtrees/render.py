@@ -21,6 +21,8 @@ def symbol_for(dirs: set, chart_cfg: dict, kind: str = "line") -> str:
         dirs = {{"l": "r", "r": "l"}.get(d, d) for d in dirs}
     if kind == "marriage":
         return chart_cfg["symbols"]["marriage"]
+    if kind == "mline":
+        return chart_cfg["symbols"].get("marriage_h", chart_cfg["symbols"]["h"])
     name = DIRS_TO_SYMBOL.get(frozenset(dirs), "h")
     return chart_cfg["symbols"][name]
 
@@ -69,12 +71,40 @@ def sanitize_ref(ref: str) -> str:
     return "{{!}}".join(parts) if len(parts) > 1 else ref
 
 
-def box_content(chart: Chart, bid: str, graph: dict, cfg: dict, with_refs: bool = True) -> str:
+def spouse_inline(node, pid: str, chart: Chart, graph: dict, cfg: dict, existing: dict | None) -> str:
+    """בני הזוג של בן משפחה בתוך הקופסה: "אשת [[בעלה]]" לבת, "אשתו: [[אשתו]]" לבן. רק לבני זוג שאין להם קופסה."""
+    ccfg = cfg["chart"]
+    boxed = {b["person"] for b in chart.boxes.values() if b.get("node") is node and b["role"] == "spouse"}
+    spouses = [m.spouse for m in node.marriages if m.spouse and m.spouse not in boxed]
+    if not spouses:
+        return ""
+    person = graph["persons"][pid]
+    parts = []
+    for sp in spouses:
+        sperson = graph["persons"].get(sp, {"name": sp, "title": None})
+        label = person_label(sperson, cfg, years=False)
+        if person.get("gender") == "f":
+            parts.append(f"{ccfg.get('wife_of', 'אשת')} {label}")
+        elif cfg["chart"].get("show_sons_wives", True):
+            parts.append(f"{ccfg.get('husband_label', 'אשתו:')} {label}")
+        # קישור לעץ של משפחת בן הזוג, אם קיים באתר
+        if existing:
+            trees = existing.get("person_to_trees", {}).get(sp) or []
+            trees = [t for t in trees if t.startswith("תבנית:")]
+            if trees:
+                t = trees[0]
+                parts.append(f"([[{t}|{t.split(':', 1)[1]}]])")
+    return "<br /><small>" + "; ".join(parts) + "</small>" if parts else ""
+
+
+def box_content(chart: Chart, bid: str, graph: dict, cfg: dict, with_refs: bool = True, existing: dict | None = None) -> str:
     info = chart.boxes[bid]
     pid = info["person"]
     person = graph["persons"][pid]
     label = person_label(person, cfg)
     node = info.get("node")
+    if node is not None and info["role"] == "member":
+        label += spouse_inline(node, pid, chart, graph, cfg, existing)
     ref_texts: list[str] = []
     if with_refs and node is not None:
         if info["role"] == "member" and node.depth > 0:
@@ -93,7 +123,7 @@ def box_content(chart: Chart, bid: str, graph: dict, cfg: dict, with_refs: bool 
     return label
 
 
-def chart_wikitext(chart: Chart, graph: dict, cfg: dict, with_refs: bool = True) -> str:
+def chart_wikitext(chart: Chart, graph: dict, cfg: dict, with_refs: bool = True, existing: dict | None = None) -> str:
     ccfg = cfg["chart"]
     lines = [f"{{{{{ccfg['start']}}}}}"]
     for r in range(chart.height):
@@ -108,9 +138,9 @@ def chart_wikitext(chart: Chart, graph: dict, cfg: dict, with_refs: bool = True)
                 cells.append(" ")
             elif cell.kind == "box":
                 cells.append(f" {cell.ref} ")
-                params.append(f"{cell.ref}={box_content(chart, cell.ref, graph, cfg, with_refs)}")
-            elif cell.kind == "marriage":
-                cells.append(symbol_for(cell.dirs, ccfg, "marriage"))
+                params.append(f"{cell.ref}={box_content(chart, cell.ref, graph, cfg, with_refs, existing)}")
+            elif cell.kind in ("marriage", "mline"):
+                cells.append(symbol_for(cell.dirs, ccfg, cell.kind))
             else:
                 cells.append(symbol_for(cell.dirs, ccfg))
         if not cells:
@@ -124,17 +154,18 @@ def chart_wikitext(chart: Chart, graph: dict, cfg: dict, with_refs: bool = True)
 
 
 def tree_page(title: str, chart: Chart, graph: dict, cfg: dict, family: dict | None, notes: list[str],
-              as_template: bool = True) -> str:
+              as_template: bool = True, existing: dict | None = None) -> str:
     """דף שלם: הערת מקור, העץ, קטגוריות. כתבנית – עם noinclude."""
     header = ["<!-- עץ משפחה שנבנה אוטומטית מתוך ערכי חב\"דפדיה (chabadpedia-family-trees).",
               "     כל קשר בעץ מגיע ממשפט בערך של אחד מבני המשפחה; ראו את דף הבדיקה שמצורף לעץ.",
               "     קשרים בלי מקור חיצוני מסומנים בדף הבדיקה כ\"ללא מקור\"."]
     header += [f"     {n}" for n in notes]
     header.append("-->")
-    body = chart_wikitext(chart, graph, cfg)
-    cats = ["[[קטגוריה:עצי משפחה]]"]
+    body = chart_wikitext(chart, graph, cfg, existing=existing)
+    sort_key = title.replace("עץ משפחת ", "").replace("עץ ", "")
+    cats = [f"[[קטגוריה:עצי משפחה|{sort_key}]]"]
     if family and family.get("family_categories"):
-        cats += [f"[[קטגוריה:{c}]]" for c in family["family_categories"]]
+        cats += [f"[[קטגוריה:{c}|*]]" for c in family["family_categories"]]
     if as_template:
         tail = "<noinclude>\n" + "\n".join(cats) + "\n</noinclude>"
     else:

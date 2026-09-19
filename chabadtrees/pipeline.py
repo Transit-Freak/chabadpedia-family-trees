@@ -283,7 +283,7 @@ def _drop_married_in_roots(forest: list[TreeNode], graph: dict) -> list[TreeNode
 
 
 def build_trees(graph: dict, cfg: dict, only_label: str | None = None, root: str | None = None,
-                max_depth: int | None = None, max_nodes: int | None = None) -> list[dict]:
+                max_depth: int | None = None, max_nodes: int | None = None, existing: dict | None = None) -> list[dict]:
     tb = TreeBuilder(graph, cfg)
     max_nodes = max_nodes or cfg.get("max_tree_nodes", 70)
     out = []
@@ -291,7 +291,7 @@ def build_trees(graph: dict, cfg: dict, only_label: str | None = None, root: str
         if root not in graph["persons"]:
             raise SystemExit(f"האדם '{root}' לא נמצא בגרף")
         tree = tb.build(root, None, None, max_nodes, max_depth)
-        out.append(_tree_record(graph, cfg, f"עץ משפחת {wt.display_name(root)}", [tree], {"kind": "root", "label": root, "family_categories": []}))
+        out.append(_tree_record(graph, cfg, f"עץ משפחת {wt.display_name(root)}", [tree], {"kind": "root", "label": root, "family_categories": []}, existing))
         return out
     for spec in family_specs(graph, cfg):
         if only_label and only_label not in spec["label"]:
@@ -312,13 +312,14 @@ def build_trees(graph: dict, cfg: dict, only_label: str | None = None, root: str
         shown = {n.person for t in forest for n in t.all_nodes()}
         if len(shown) < 2:
             continue
-        out.append(_tree_record(graph, cfg, f"עץ {spec['label']}" if spec["label"].startswith("משפחת") else f"עץ משפחת {spec['label']}", forest, spec))
+        out.append(_tree_record(graph, cfg, f"עץ {spec['label']}" if spec["label"].startswith("משפחת") else f"עץ משפחת {spec['label']}", forest, spec, existing))
     return out
 
 
-def _tree_record(graph: dict, cfg: dict, title: str, forest: list[TreeNode], spec: dict) -> dict:
+def _tree_record(graph: dict, cfg: dict, title: str, forest: list[TreeNode], spec: dict, existing: dict | None = None) -> dict:
     box_ids: dict = {}
-    chart = layout_forest(forest, box_ids)
+    chart = layout_forest(forest, box_ids, spouse_style=cfg["chart"].get("spouse_style", "inline"),
+                          root_spouse_boxes=cfg["chart"].get("root_spouse_boxes", True))
     shown = [n.person for t in forest for n in t.all_nodes()]
     spouses = [m.spouse for t in forest for n in t.all_nodes() for m in n.marriages if m.spouse]
     def disp(pid: str) -> str:
@@ -329,7 +330,7 @@ def _tree_record(graph: dict, cfg: dict, title: str, forest: list[TreeNode], spe
     truncated = [n.person for t in forest for n in t.all_nodes() if n.truncated]
     if truncated:
         notes.append("ענפים שנקטעו בגלל מגבלת גודל: " + ", ".join(disp(p) for p in truncated[:8]))
-    wikitext = tree_page(title, chart, graph, cfg, spec, notes)
+    wikitext = tree_page(title, chart, graph, cfg, spec, notes, existing=existing)
     return {"title": title, "slug": slug(title), "kind": spec["kind"], "label": spec["label"], "roots": [t.person for t in forest],
             "members_shown": sorted(set(shown)), "spouses_shown": sorted(set(spouses)), "truncated": truncated,
             "notes": notes, "wikitext": wikitext, "chart": chart, "width": chart.width, "height": chart.height}

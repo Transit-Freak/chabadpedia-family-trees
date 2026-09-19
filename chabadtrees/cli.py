@@ -119,7 +119,8 @@ def cmd_render(args, cfg, store):
     if args.ancestors_for or args.ancestors:
         trees += build_ancestor_trees(graph, cfg, for_person=args.ancestors_for, generations=args.generations)
     if not args.ancestors and not args.ancestors_for:
-        trees += build_trees(graph, cfg, only_label=args.family, root=args.root, max_depth=args.max_depth, max_nodes=args.max_nodes)
+        existing = store.load("existing_trees.json", None)
+        trees += build_trees(graph, cfg, only_label=args.family, root=args.root, max_depth=args.max_depth, max_nodes=args.max_nodes, existing=existing)
     previews = write_outputs(trees, graph, cfg, args.out, args.png)
     cov = store.load("coverage.json", None)
     review = write_review(graph, trees, cov, cfg, args.out, previews)

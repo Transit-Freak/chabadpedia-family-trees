@@ -154,23 +154,32 @@ class TestLayout(unittest.TestCase):
         leaf = lambda n: TreeNode(n, [], 1)
         root = TreeNode("P", [Marriage("S", [leaf("a"), leaf("b"), leaf("c")])], 0)
         g = self.grid(layout_forest([root], {}))
-        self.assertEqual(g[0], "·ByB·")
-        self.assertEqual(g[1], ",-+-.")
+        # הצומת ד בדיוק מעל הילד האמצעי; הילד הראשון מקבל . והאחרון ,
+        self.assertEqual(g[0], "B~ד~B")
+        self.assertEqual(g[1], ".-+-,")
         self.assertEqual(g[2], "B·B·B")
+
+    def test_only_verified_symbols(self):
+        leaf = lambda n, d=1: TreeNode(n, [], d)
+        c2 = TreeNode("c2", [Marriage("s2", [leaf("g1", 2), leaf("g2", 2)])], 1)
+        root = TreeNode("P", [Marriage("S", [leaf("c1"), c2, leaf("c3"), leaf("c4")])], 0)
+        g = "".join(self.grid(layout_forest([root], {})))
+        self.assertTrue(set(g) <= set("B·!-~+.,דז"), g)
 
     def test_two_marriages_no_crossing(self):
         leaf = lambda n: TreeNode(n, [], 1)
         root = TreeNode("P", [Marriage("S1", [leaf("a1"), leaf("a2")]), Marriage("S2", [leaf("b1")])], 0)
         g = self.grid(layout_forest([root], {}))
-        self.assertNotIn("+", "".join(g))
-        self.assertEqual(g[0].count("B"), 3)
+        self.assertEqual(g[0], "B~ד~B~ד~B")
         self.assertEqual(g[-1].count("B"), 3)
+        self.assertTrue(set("".join(g)) <= set("B·!-~+.,דז"), g)
 
     def test_vertical_symbol_is_not_pipe(self):
         root = TreeNode("P", [Marriage(None, [TreeNode("c", [], 1)])], 0)
         text = chart_wikitext(layout_forest([root], {}), {"persons": {"P": {"name": "P", "title": None}, "c": {"name": "c", "title": None}}, "edges": []}, CFG)
         self.assertIn("{{עץ משפחה|!}}", text)
         self.assertIn("{{עץ משפחה/התחלה}}", text)
+        self.assertNotIn("|y|", text)
 
 
 class MockServerMixin:
@@ -227,6 +236,13 @@ class TestPipelineWithMock(MockServerMixin, unittest.TestCase):
         self.assertGreaterEqual(len(t["members_shown"]), 28)
         self.assertIn("[[רבי שניאור זלמן מלאדי (אדמו\"ר הזקן)|רבי שניאור זלמן מלאדי]]", t["wikitext"])
         self.assertIn("<ref>", t["wikitext"])
+        self.assertIn("אשת [[רבי שמריהו גורארי']]", t["wikitext"])     # בת: בעלה בתוך הקופסה
+        self.assertNotIn("|y|", t["wikitext"])
+        for line in t["wikitext"].split("\n"):
+            if line.startswith("{{עץ משפחה|"):
+                cells = [c.strip() for c in wt.split_top(line[len("{{עץ משפחה|"):].rstrip("}")) if "=" not in c]
+                bad = [c for c in cells if c and not c.startswith("B") and c not in ("!", "-", "~", "+", ".", ",", "ד", "ז")]
+                self.assertEqual(bad, [], line[:80])
         self.assertNotIn("|B", t["wikitext"].split("{{עץ משפחה/התחלה}}")[0])
         anc = build_ancestor_trees(self.graph, CFG, for_person='רבי מנחם מענדל שניאורסון (אדמו"ר שליט"א)')
         self.assertEqual(anc[0]["slots"]["f"], "רבי לוי יצחק שניאורסון")
