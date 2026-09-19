@@ -344,5 +344,94 @@ class TestResumeAfterHardFailure(unittest.TestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
 
+class TestRealTextRules(unittest.TestCase):
+    """כללים שנוספו אחרי הריצות החיות: לקסיקון שמות, תאריכים, נושא-בת, סיווג דפי אישים, מיזוג לא-מקושרים."""
+
+    def _strict(self):
+        known = {f"פלוני {i}" for i in range(1000)} | {"אשר וילהלם", "חנה וילהלם", "שאול וילהלם", "שלמה זלמן לנדא", "שמואל גליצנשטיין"}
+        return Extractor(CFG, known_persons=known, common_words={"מפעילה", "פעילות", "רחבה", "שימשה", "כמחנכת", "ביתו"})
+
+    def test_dates_are_not_people(self):
+        from chabadtrees.extract import _looks_like_year
+        for s in ("כ' במנחם אב", "ל' בסיוון", 'י"א ניסן', 'תרפ"ט', 'ה\'תשמ"ב', "ג' תמוז"):
+            self.assertTrue(_looks_like_year(s), s)
+        for s in ("חנה", "מנחם מענדל", "אב הרבי"):
+            self.assertFalse(_looks_like_year(s), s)
+
+    def test_name_lexicon(self):
+        ex = self._strict()
+        self.assertTrue(ex.strict_persons)
+        self.assertEqual(ex.unlinked_name("שימשה כמחנכת"), "")
+        self.assertEqual(ex.unlinked_name("חנה מפעילה פעילות רחבה"), "חנה")
+        self.assertEqual(ex.unlinked_name("חנה למשפחת וולף"), "חנה לבית וולף")
+        self.assertEqual(ex.unlinked_name("חנה בלה ביתו"), "חנה בלה")       # "ביתו" – שגיאת כתיב של "בתו", לא שם; "בלה" שם נדיר
+        self.assertEqual(ex.unlinked_name("שאול אמסעל"), "שאול אמסעל")     # שם משפחה נדיר בלי ערך נשמר
+        self.assertEqual(ex.unlinked_name("מנדבורנא", "m"), "")             # מקום אחרי תואר – לא שם
+        self.assertTrue(ex.plain_name_ok("חנה"))
+        self.assertTrue(ex.plain_name_ok("אשר"))        # שם פרטי, גם אם הוא מילת קישור
+        self.assertFalse(ex.plain_name_ok("וילהלם"))    # שם משפחה בלבד
+
+    def test_daughter_is_subject_of_marriage(self):
+        ex = self._strict()
+        out, _info = ex.extract("אשר וילהלם", "בתו חנה נישאה ל[[שלמה זלמן לנדא]]. בנו, ר' שאול אמסעל - שליח.")
+        triples = {(r.relation, r.person, r.relative) for r in out}
+        self.assertIn(("spouse", "~חנה", "שלמה זלמן לנדא"), triples)
+        self.assertIn(("parent", "~חנה", "אשר וילהלם"), triples)
+        self.assertIn(("parent", "~שאול אמסעל", "אשר וילהלם"), triples)
+        self.assertNotIn(("spouse", "אשר וילהלם", "שלמה זלמן לנדא"), triples)
+        for r in out:
+            if (r.relation, r.person) == ("parent", "~חנה"):
+                self.assertGreaterEqual(r.confidence, 0.5)
+
+    def test_wife_of_link_in_list(self):
+        ex = self._strict()
+        out, _ = ex.extract("אשר וילהלם", "==משפחתו==\n* חנה ליבא, אשת [[שמואל גליצנשטיין]]\n")
+        triples = {(r.relation, r.person, r.relative) for r in out}
+        self.assertIn(("spouse", "~חנה ליבא", "שמואל גליצנשטיין"), triples)
+        self.assertNotIn(("parent", "שמואל גליצנשטיין", "אשר וילהלם"), triples)
+
+    def test_honorific_must_touch_the_link(self):
+        from chabadtrees.extract import honorific_before
+        self.assertIsNone(honorific_before("* הרב שלום הלפרין, רב ב"))
+        self.assertEqual(honorific_before("אחיו הרב "), "m")
+        self.assertEqual(honorific_before("בתו מרת "), "f")
+
+    def test_person_page_classifier(self):
+        from chabadtrees.persons import is_person_page
+        self.assertTrue(is_person_page({"title": "פלוני", "categories": ['חסידים בתקופת אדמו"ר שליט"א']}))
+        self.assertTrue(is_person_page({"title": "יום טוב עהרליך", "categories": ["זמרים"]}))
+        self.assertFalse(is_person_page({"title": 'ניגון דבקות (אדמו"ר הזקן)', "categories": ['ניגוני אדמו"ר הזקן', "ראש השנה"]}))
+        self.assertFalse(is_person_page({"title": "השלוחים לארץ הקודש", "categories": ["שלוחים בישראל"]}))
+        self.assertFalse(is_person_page({"title": "חסידות ברסלב", "categories": ["חסידויות ושושלות"]}))
+        self.assertTrue(is_person_page({"title": "אלמוני", "categories": [], "wikitext": B3 + "אלמוני" + B3 + ' נולד בשנת תש"ך'}))
+
+    def test_unlinked_merge_by_family_slot(self):
+        from chabadtrees.graph import _names_match
+        self.assertTrue(_names_match("חנה", "חנה ליבא"))
+        self.assertTrue(_names_match("חי שרה", "חיה שרה"))
+        self.assertTrue(_names_match("נטע שלמה", "נטע שלמה וילהלם"))
+        self.assertFalse(_names_match("חיה מושקא", "חיה שרה"))
+        pages = {"אשר וילהלם": {"gender_votes": {"m": 3}}, "משה וילהלם": {"gender_votes": {"m": 3}}}
+
+        def rel(person, relative, relation, page, **kw):
+            base = dict(person=person, relative=relative, relation=relation, source_page=page, evidence="", refs=[], method="pattern",
+                        pattern="t", confidence=0.8, person_gender=None, relative_gender=None, side=None, person_has_article=True,
+                        relative_has_article=True, person_name=person.lstrip("~"), relative_name=relative.lstrip("~"), order=0)
+            base.update(kw)
+            return base
+        relations = [
+            rel("אשר וילהלם", "~חיה שרה", "spouse", "אשר וילהלם", relative_has_article=False),          # אשתו חיה שרה (בדף הבעל)
+            rel("משה וילהלם", "אשר וילהלם", "parent", "משה וילהלם"),                                     # בנו של אשר
+            rel("משה וילהלם", "~חי שרה", "parent", "משה וילהלם", relative_has_article=False),            # אמו "חי שרה" (שגיאת כתיב, בדף הבן)
+            rel("~חיה שרה", "אשר וילהלם", "parent", "אשר וילהלם", person_has_article=False, person_gender="f"),  # בתו חיה שרה – נכדה בשם הסבתא
+        ]
+        g = build_graph(pages, relations, CFG)
+        unl = [p for p in g["persons"].values() if p["id"].startswith("~")]
+        names = sorted(p["name"] for p in unl)
+        self.assertEqual(names, ["חיה שרה", "חיה שרה"])     # אישה ואם מוזגו לאחת; הבת נשארה נפרדת
+        wife = [p for p in unl if any(e["relation"] == "spouse" and p["id"] in (e["a"], e["b"]) for e in g["edges"])]
+        self.assertEqual(len(wife), 1)
+        self.assertTrue(any(e["relation"] == "parent" and e["a"] == "משה וילהלם" and e["b"] == wife[0]["id"] for e in g["edges"]))
+
 if __name__ == "__main__":
     unittest.main()

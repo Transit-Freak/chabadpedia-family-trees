@@ -90,7 +90,7 @@ def spouse_inline(node, pid: str, chart: Chart, graph: dict, cfg: dict, existing
         # קישור לעץ של משפחת בן הזוג, אם קיים באתר
         if existing:
             trees = existing.get("person_to_trees", {}).get(sp) or []
-            trees = [t for t in trees if t.startswith("תבנית:")]
+            trees = [t for t in trees if t.startswith("תבנית:") and t != getattr(chart, "self_tree", None)]
             if trees:
                 t = trees[0]
                 parts.append(f"([[{t}|{t.split(':', 1)[1]}]])")

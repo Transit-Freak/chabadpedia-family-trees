@@ -11,10 +11,12 @@ import logging
 import os
 import re
 import time
+from collections import Counter
 
 from . import wikitext as wt
 from .api import ApiError, MediaWikiClient
 from .extract import Extractor, build_aliases
+from .persons import is_person_page
 from .graph import build_graph, parents_of, year_of
 from .layout import TreeBuilder, TreeNode, layout_forest, ancestor_chart
 from .render import tree_page, ahnentafel_wikitext, chart_wikitext, slug
@@ -172,7 +174,10 @@ def fetch_pages(client: MediaWikiClient, cfg: dict, store: Store, refresh: bool 
 
 # --------------------------------------------------------------------------- חילוץ
 def extract_all(cfg: dict, store: Store, pages: dict | None = None, use_llm: bool = False) -> dict:
-    pages = pages if pages is not None else store.load("pages.json", {})
+    all_pages = pages if pages is not None else store.load("pages.json", {})
+    # עץ הקטגוריות "אישים" מכיל גם ספרים, ניגונים, חסידויות ואירועים – מסננים לדפי אישים בלבד
+    pages = {t: p for t, p in all_pages.items() if is_person_page(p)}
+    log.info("%d דפי אישים מתוך %d דפים שנמשכו", len(pages), len(all_pages))
     known = {p["title"] for p in pages.values()} | set(pages)
     extra: dict[str, str] = {}
     for page in pages.values():
@@ -183,7 +188,12 @@ def extract_all(cfg: dict, store: Store, pages: dict | None = None, use_llm: boo
                     for alias in re.split(r"<br\s*/?>|,|;|/", wt.plain(val)):
                         if alias.strip():
                             extra[alias.strip()] = page["title"]
-    ex = Extractor(cfg, known_persons=known, aliases=build_aliases(known, extra))
+    # מילים שכיחות בקורפוס (ב-8+ דפים) שאינן מילות-שם – עוצרות שמות לא-מקושרים ("חנה מפעילה פעילות")
+    df: Counter = Counter()
+    for page in all_pages.values():
+        df.update(set(re.findall(r"[א-ת][א-ת'\"\-]{1,}", wt.plain(wt.strip_templates(wt.strip_comments(page.get("wikitext") or ""))))))
+    common = {w for w, n in df.items() if n >= 8}
+    ex = Extractor(cfg, known_persons=known, aliases=build_aliases(known, extra), common_words=common)
     relations, infos = [], {}
     for title, page in pages.items():
         final = page.get("title", title)
@@ -193,7 +203,7 @@ def extract_all(cfg: dict, store: Store, pages: dict | None = None, use_llm: boo
     if use_llm:
         from .llm import run_llm
         relations += run_llm(cfg, store, pages, known)
-    result = {"pages": infos, "relations": relations,
+    result = {"pages": infos, "relations": relations, "non_person_pages": sorted(set(all_pages) - set(pages)),
               "template_names": dict(sorted(ex.template_names.items(), key=lambda kv: -kv[1])[:40]),
               "unknown_family_fields": ex.unknown_fields, "extracted_at": now()}
     store.save("relations.json", result)
@@ -244,8 +254,12 @@ def resolve_links(client: MediaWikiClient, cfg: dict, store: Store, extracted: d
     return resolution
 
 
-def apply_resolution(extracted: dict, resolution: dict) -> dict:
-    """מחליף יעדי קישור בכותרת הקנונית ומסמן אנשים שאין להם ערך."""
+def apply_resolution(extracted: dict, resolution: dict, known: set[str] | None = None, fetched: set[str] | None = None) -> dict:
+    """מחליף יעדי קישור בכותרת הקנונית ומסמן אנשים שאין להם ערך.
+
+    known: כותרות דפי האישים. קישור לדף שקיים באתר אבל אינו דף אישיות (מקום, תאריך, מוסד) ואין לו תואר לפניו –
+    אינו אדם, והקשר מושמט.
+    """
     if not resolution:
         return extracted
     def canon(t: str) -> str:
@@ -254,7 +268,9 @@ def apply_resolution(extracted: dict, resolution: dict) -> dict:
             seen.add(t)
             t = resolution[t]["to"]
         return t
+    kept, dropped = [], 0
     for rel in extracted["relations"]:
+        ok = True
         for side in ("person", "relative"):
             t = rel[side]
             if t.startswith("~"):
@@ -264,12 +280,26 @@ def apply_resolution(extracted: dict, resolution: dict) -> dict:
             info = resolution.get(t) or resolution.get(c)
             if info is not None:
                 rel[f"{side}_has_article"] = bool(info.get("exists", True))
+                exists = bool(info.get("exists", True))
+            else:
+                exists = bool(fetched) and c in fetched
+            if known and exists and c not in known and not rel.get(f"{side}_gender"):
+                ok = False
+        if ok:
+            kept.append(rel)
+        else:
+            dropped += 1
+    if dropped:
+        log.info("הושמטו %d קשרים לדפים קיימים שאינם דפי אישים", dropped)
+    extracted["relations"] = kept
     return extracted
 
 
 def graph_step(cfg: dict, store: Store, extracted: dict | None = None) -> dict:
     extracted = extracted or store.load("relations.json", {})
-    extracted = apply_resolution(extracted, store.load("link_resolution.json", {}))
+    pages_all = store.load("pages.json", {})
+    extracted = apply_resolution(extracted, store.load("link_resolution.json", {}), known=set(extracted.get("pages") or ()),
+                                 fetched={p.get("title", t) for t, p in pages_all.items()} | set(pages_all))
     graph = build_graph(extracted["pages"], extracted["relations"], cfg)
     store.save("graph.json", graph)
     log.info("גרף: %d אנשים, %d קשרים, %d משפחות", len(graph["persons"]), len(graph["edges"]), len(graph["families"]))
@@ -321,9 +351,11 @@ def married_in(graph: dict, members: set[str], surnames: set[str], tb: TreeBuild
         p = graph["persons"].get(pid, {})
         if any(par in members for par in tb._parents.get(pid, [])):
             continue
-        if not any(sp in members for sp in tb._spouses.get(pid, [])):
+        sps = [sp for sp in tb._spouses.get(pid, []) if sp in members]
+        if not sps:
             continue
-        if p.get("surname") and p["surname"] in surnames:
+        spouse_is_descendant = any(any(par in members for par in tb._parents.get(sp, [])) for sp in sps)
+        if p.get("surname") and p["surname"] in surnames and not spouse_is_descendant:
             continue
         out.add(pid)
     return out
@@ -363,8 +395,13 @@ def choose_roots(graph: dict, members: set[str], cfg: dict, tb: TreeBuilder) -> 
         if not owned:
             continue
         roots.append(pid)
-    roots.sort(key=lambda p: (0 if persons[p].get("fetched") else 1, year_of(persons[p]) or 9999, p))
-    return roots
+    roots.sort(key=lambda p: (0 if persons[p].get("fetched") else 1, 0 if persons[p].get("gender") == "m" else 1, year_of(persons[p]) or 9999, p))
+    chosen: list[str] = []
+    for r in roots:
+        if any(sp in chosen for sp in tb._spouses.get(r, [])):
+            continue
+        chosen.append(r)
+    return chosen
 
 
 def _drop_married_in_roots(forest: list[TreeNode], graph: dict) -> list[TreeNode]:
@@ -433,6 +470,7 @@ def _tree_record(graph: dict, cfg: dict, title: str, forest: list[TreeNode], spe
     box_ids: dict = {}
     chart = layout_forest(forest, box_ids, spouse_style=cfg["chart"].get("spouse_style", "inline"),
                           root_spouse_boxes=cfg["chart"].get("root_spouse_boxes", True))
+    chart.self_tree = "תבנית:" + title
     shown = [n.person for t in forest for n in t.all_nodes()]
     spouses = [m.spouse for t in forest for n in t.all_nodes() for m in n.marriages if m.spouse]
     def disp(pid: str) -> str:

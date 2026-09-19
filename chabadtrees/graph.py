@@ -1,6 +1,7 @@
 """איחוד הקשרים לגרף אנשים: מיזוג ראיות, הצלבה, הסקות, בדיקות עקביות וחלוקה למשפחות."""
 from __future__ import annotations
 
+import difflib
 import re
 from collections import Counter, defaultdict
 
@@ -62,7 +63,7 @@ def build_graph(pages: dict[str, dict], relations: list[dict], config: dict) -> 
         if info.get("surname"):
             p["surname"] = info["surname"]
 
-    # --- אנשים לא-מקושרים: מזהה = ~שם@עוגן (העוגן: הצד המקושר בקשר) ---
+    # --- אנשים לא-מקושרים: מזהה = ~שם@עוגן:תפקיד (העוגן: הצד המקושר בקשר; התפקיד מבדיל "אשתו חיה שרה" מ"בתו חיה שרה") ---
     resolved: list[dict] = []
     for rel in relations:
         rel = dict(rel)
@@ -75,7 +76,11 @@ def build_graph(pages: dict[str, dict], relations: list[dict], config: dict) -> 
         for side in ("person", "relative"):
             pid = rel[side]
             if pid.startswith("~"):
-                rel[side] = f"{pid}@{anchor}"
+                if rel["relation"] == "parent":
+                    role = "child" if side == "person" else "parent"
+                else:
+                    role = rel["relation"]
+                rel[side] = f"{pid}@{anchor}:{role}"
         resolved.append(rel)
 
     edges: dict[tuple, dict] = {}
@@ -161,37 +166,111 @@ def _surname_from_name(name: str) -> str:
     return words[-1] if len(words) >= 2 else ""
 
 
+def _name_key(name: str) -> str:
+    words = [w.strip("(),.;:'\"") for w in wt.normalize_quotes(name or "").replace("-", " ").split()]
+    return " ".join(w for w in words if w and w not in wt.HONORIFIC_WORDS and w not in wt.SUFFIX_WORDS)
+
+
+def _given_part(name: str) -> str:
+    """"אסתר לבית וולף" → "אסתר"."""
+    return re.split(r"\s+לבית\s+", name, maxsplit=1)[0]
+
+
+def _names_match(a: str, b: str) -> bool:
+    """אותו אדם? שמות שווים, אחד תחילית-מילים של השני ("חנה" ⊂ "חנה ליבא", "נטע שלמה" ⊂ "נטע שלמה וילהלם"),
+    או דמיון גבוה מאוד (שגיאת כתיב: "חי שרה"/"חיה שרה")."""
+    a, b = _name_key(_given_part(a)), _name_key(_given_part(b))
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    wa, wb = a.split(), b.split()
+    if wa[:len(wb)] == wb or wb[:len(wa)] == wa:
+        return True
+    return difflib.SequenceMatcher(None, a, b).ratio() >= 0.85
+
+
 def _merge_unlinked(persons: dict, edges: dict) -> None:
-    by_name: dict[str, list[str]] = defaultdict(list)
-    for pid in list(persons):
-        if pid.startswith("~"):
-            by_name[pid.split("@", 1)[0]].append(pid)
-    adjacency: dict[str, set[str]] = defaultdict(set)
+    """מאחד אזכורים לא-מקושרים של אותו אדם.
+
+    שני אזכורים הם אותו אדם אם השמות תואמים וגם יש להם אותו "משבצת" משפחתית: בן זוג של אותו X, ילד של אותו X,
+    הורה של אותו ילד (ולכן בן זוג של ההורה השני), או אח של X (ולכן ילד של הורי X). כך "אשתו חיה שרה" בדף הבעל
+    ו"אמו חיה שרה" בדף הבן מתאחדים, אבל סבתא ונכדה בעלות אותו שם – לא.
+    אזכור לא-מקושר שתואם לאדם עם ערך באותה משבצת ("בנו נטע שלמה" ↔ הערך "נטע שלמה וילהלם") מתמזג לתוך הערך.
+    """
+    slots: dict[str, set] = defaultdict(set)
+    parents_of: dict[str, set] = defaultdict(set)
     for (a, b, rel) in edges:
-        if rel in STRUCTURAL or rel == "sibling":
-            adjacency[a].add(b); adjacency[b].add(a)
+        if rel == "parent":
+            slots[a].add(("child_of", b)); slots[b].add(("parent_of", a)); parents_of[a].add(b)
+        elif rel == "spouse":
+            slots[a].add(("spouse", b)); slots[b].add(("spouse", a))
+        elif rel == "sibling":
+            slots[a].add(("sibling", b)); slots[b].add(("sibling", a))
+    for pid in list(slots):
+        extra = set()
+        for kind, other in slots[pid]:
+            if kind == "parent_of":
+                extra |= {("spouse", p) for p in parents_of[other] if p != pid}
+            elif kind == "sibling":
+                extra |= {("child_of", p) for p in parents_of[other]}
+        slots[pid] |= extra
+    by_slot: dict[tuple, list[str]] = defaultdict(list)
+    for pid, ss in slots.items():
+        for sl in ss:
+            by_slot[sl].append(pid)
+
+    def nm(pid: str) -> str:
+        return persons[pid]["name"] if pid.startswith("~") else wt.display_name(pid)
+
     uf = UnionFind()
-    for name, ids in by_name.items():
-        for i, x in enumerate(ids):
-            for y in ids[i + 1:]:
-                ax, ay = x.split("@", 1)[1], y.split("@", 1)[1]
-                if ax == ay or ay in adjacency[ax] or ax in adjacency[ay]:
+    known_match: dict[str, set[str]] = defaultdict(set)      # לא-מקושר → ערכים תואמים באותה משבצת
+    for sl, ids in by_slot.items():
+        if len(ids) < 2:
+            continue
+        unl = [x for x in ids if x.startswith("~")]
+        if not unl:
+            continue
+        for i, x in enumerate(unl):
+            for y in unl[i + 1:]:
+                if _names_match(nm(x), nm(y)):
                     uf.union(x, y)
-    remap = {pid: uf.find(pid) for pid in persons if pid.startswith("~")}
-    if all(k == v for k, v in remap.items()):
+            for k in ids:
+                if not k.startswith("~") and k in persons and _names_match(nm(x), nm(k)):
+                    known_match[x].add(k)
+    # אותו שם באותו דף מקור (למשל "אשתו חנה" ואחר כך "חנה" ברשימת הילדים – לא: רק כשאין משבצת סותרת)
+    groups: dict[str, list[str]] = defaultdict(list)
+    for pid in persons:
+        if pid.startswith("~"):
+            groups[uf.find(pid)].append(pid)
+    remap: dict[str, str] = {}
+    for root, members in groups.items():
+        knowns = set()
+        for m in members:
+            knowns |= known_match.get(m, set())
+        if len(knowns) == 1:
+            rep = next(iter(knowns))
+        else:
+            rep = max(members, key=lambda x: (len(_name_key(persons[x]["name"]).split()), len(persons[x]["name"]), -len(x)))
+        for m in members:
+            if m != rep:
+                remap[m] = rep
+    if not remap:
         return
     for old, new in remap.items():
-        if old == new:
-            continue
         po, pn = persons.pop(old), persons[new]
         pn["gender_votes"].update(po["gender_votes"])
         pn["mentioned_in"] |= po["mentioned_in"]
+        if new.startswith("~") and len(_name_key(po["name"]).split()) > len(_name_key(pn["name"]).split()):
+            pn["name"] = po["name"]
     for key in list(edges):
         a, b, rel = key
         na, nb = remap.get(a, a), remap.get(b, b)
         if (na, nb) == (a, b):
             continue
         e = edges.pop(key)
+        if na == nb:
+            continue
         nkey = edge_key(na, nb, rel)
         if nkey in edges:
             edges[nkey]["evidence"].extend(e["evidence"])

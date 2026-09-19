@@ -45,6 +45,7 @@ class Chart:
     boxes: dict = field(default_factory=dict)   # box id -> {"person": id, "role": member|spouse, "node": TreeNode}
     width: int = 0
     height: int = 0
+    self_tree: str | None = None     # שם דף העץ שנבנה (לא מצביעים עליו כ"עץ קיים")
 
     def add_line(self, row: int, col: int, dirs: set) -> None:
         cell = self.cells.get((row, col))
