@@ -44,6 +44,8 @@ def build_graph(pages: dict[str, dict], relations: list[dict], config: dict) -> 
     def ensure_person(pid: str, name: str, has_article: bool, linked: bool) -> dict:
         p = persons.get(pid)
         if p is None:
+            if pid.startswith("~") and (not name or name.startswith("~")):
+                name = pid[1:].split("@", 1)[0]      # שם לא-מקושר בלי תווי המזהה
             p = persons[pid] = {
                 "id": pid, "title": pid if not pid.startswith("~") else None, "name": name or wt.display_name(pid),
                 "linked": linked, "fetched": pid in fetched, "gender": None, "gender_votes": Counter(),

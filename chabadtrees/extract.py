@@ -602,17 +602,18 @@ class Extractor:
                 targets.append((t2, self._has_article(t2), _gender_from_honorific(between) or gender))
                 prev_end = span2[1]
         for target, has, gender in targets:
+            tname = wt.display_name(target) if not target.startswith("~") else target[1:]
             if direction == "child":
                 rel = Relation(person=target, relative=title, relation=relation, source_page=title, evidence="",
-                               person_has_article=has, person_gender=gender, person_name=wt.display_name(target),
+                               person_has_article=has, person_gender=gender, person_name=tname,
                                relative_name=wt.display_name(title), method="list", confidence=0.8 if has else 0.6)
             else:
                 rel = Relation(person=title, relative=target, relation=relation, source_page=title, evidence="",
-                               relative_has_article=has, relative_gender=gender, relative_name=wt.display_name(target),
+                               relative_has_article=has, relative_gender=gender, relative_name=tname,
                                person_name=wt.display_name(title), method="list", confidence=0.8 if has else 0.6)
             if relation == "parent_in_law_rev":
                 rel.relation, rel.person, rel.relative = "parent_in_law", target, title
-                rel.person_name, rel.relative_name = wt.display_name(target), wt.display_name(title)
+                rel.person_name, rel.relative_name = tname, wt.display_name(title)
             rel.evidence = wt.plain(line).strip()
             rel.refs = wt.refs_in(raw, refs)
             rel.pattern = "list:" + sec_title
