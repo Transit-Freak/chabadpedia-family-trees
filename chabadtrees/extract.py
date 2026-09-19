@@ -82,6 +82,8 @@ _HON_ALT = "|".join(re.escape(h) for h in HONORIFICS)
 SUBJ = ""   # הנושא מזוהה מהטקסט שלפני ההתאמה (subject_of), לא בתוך הרגקס
 _PRE_LINK_RE = re.compile(r"(?P<pre>.*?)(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)\[\[(?P<t>[^\[\]|#]+?)(?:#[^\[\]|]*)?(?:\|(?P<d>[^\[\]]*))?\]\]\s*[,–\-:]?\s*$", re.S)
 _PRE_NAME_RE = re.compile(r"(?P<pre>.*?)(?<![א-ת])(?P<hon>(?:(?:" + _HON_ALT + r")\s+)+)(?P<n>" + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,2})\s*[,–\-:]\s*$", re.S)
+# בלי פסיק ("התחתן עם מרת פעשה הדסה הלפרין בתו של") – רק בריצה מלאה, כשהלקסיקון מאמת את השם
+_PRE_NAME_LOOSE_RE = re.compile(r"(?P<pre>.*?)(?<![א-ת])(?P<hon>(?:(?:" + _HON_ALT + r")\s+)+)(?P<n>" + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,3})\s*[,–\-:]?\s*$", re.S)
 _OBJECT_TAIL_RE = re.compile(r"(?:(?<![א-ת])(?:של|את|עם)\s*|(?<![א-ת])[לבומכ])$")
 # "* חנה ליבא, " בתחילת פריט רשימה – השם הוא הנושא של הביטוי שאחרי הפסיק
 _PRE_LISTHEAD_RE = re.compile(r"^\s*[*#:;]+\s*(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)(?P<n>" + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,3})\s*[,–\-]\s*$")
@@ -635,7 +637,7 @@ class Extractor:
                 if resolved:
                     return resolved, True, _gender_from_honorific(hon), wt.display_name(resolved)
                 return "~" + name, False, _gender_from_honorific(hon), name
-        nm = _PRE_NAME_RE.match(before)
+        nm = _PRE_NAME_RE.match(before) or (_PRE_NAME_LOOSE_RE.match(before) if self.name_tokens else None)
         if nm:
             name = self.unlinked_name(nm.group("n"), nm.group("hon") or "")
             pre = nm.group("pre")
