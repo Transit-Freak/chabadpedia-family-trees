@@ -1,0 +1,126 @@
+# מריץ את הצינור מול חב"דפדיה בשרתי GitHub (שיש להם גישה לאתר), ומפרסם את התוצאות בענף results.
+name: build-trees
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "calibrate = רק כיול | all = הכול | render = רק בנייה מחדש מהמטמון"
+        default: "all"
+      family:
+        description: "אופציונלי: לבנות רק משפחות שהתווית שלהן מכילה טקסט זה"
+        default: ""
+      limit:
+        description: "אופציונלי: מגבלת דפים למשיכה (לבדיקה מהירה)"
+        default: ""
+      root:
+        description: "אופציונלי: עץ צאצאים מאדם מסוים (כותרת הערך)"
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-trees
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: גופנים לצילומי המסך
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq fonts-noto-core fonts-dejavu-core > /dev/null
+
+      - name: מטמון הדפים מריצות קודמות
+        uses: actions/cache@v4
+        with:
+          path: data
+          key: chabadpedia-data-${{ github.run_id }}
+          restore-keys: |
+            chabadpedia-data-
+
+      - name: כיול (תיעוד התבניות, שדות תבנית האישות)
+        run: |
+          python -m chabadtrees calibrate > calibrate.txt 2>&1 || true
+          tail -c 3000 calibrate.txt
+
+      - name: הרצה מלאה
+        if: inputs.mode == 'all'
+        run: |
+          set -o pipefail
+          LIMIT=""
+          if [ -n "${{ inputs.limit }}" ]; then LIMIT="--limit ${{ inputs.limit }}"; fi
+          python -m chabadtrees all --png --retry-sleep 60 $LIMIT 2>&1 | tee run.log || echo "exit code: $?" | tee -a run.log
+
+      - name: בנייה מחדש מהמטמון
+        if: inputs.mode == 'render'
+        run: |
+          set -o pipefail
+          python -m chabadtrees extract 2>&1 | tee run.log
+          python -m chabadtrees resolve 2>&1 | tee -a run.log || true
+          python -m chabadtrees graph 2>&1 | tee -a run.log
+          python -m chabadtrees existing 2>&1 | tee -a run.log || true
+          python -m chabadtrees render --png 2>&1 | tee -a run.log
+
+      - name: עץ למשפחה/אדם מסוימים
+        if: inputs.family != '' || inputs.root != ''
+        run: |
+          if [ -n "${{ inputs.family }}" ]; then python -m chabadtrees --out output/family render --family "${{ inputs.family }}" --png 2>&1 | tee -a run.log; fi
+          if [ -n "${{ inputs.root }}" ]; then python -m chabadtrees --out output/root render --root "${{ inputs.root }}" --png 2>&1 | tee -a run.log; fi
+
+      - name: סיכום
+        if: always()
+        run: |
+          python - <<'PY'
+          import json, os
+          def load(p):
+              try:
+                  with open(p, encoding="utf-8") as fh: return json.load(fh)
+              except Exception: return None
+          st = load("data/fetch_state.json") or {}
+          rel = load("data/relations.json") or {}
+          g = load("data/graph.json") or {}
+          cov = load("data/coverage.json") or []
+          summary = {
+              "titles": len(st.get("titles", [])), "failed": len(st.get("failed", {})), "missing": len(st.get("missing", {})),
+              "relations": len(rel.get("relations", [])), "persons": len(g.get("persons", {})), "edges": len(g.get("edges", [])),
+              "families": len(g.get("families", [])), "trees_exist_already": sum(1 for c in cov if c.get("status") == "exists"),
+              "trees_written": len([f for f in os.listdir("output/trees")]) if os.path.isdir("output/trees") else 0,
+              "template_names": rel.get("template_names", {}), "unknown_family_fields": rel.get("unknown_family_fields", {}),
+              "categories_failed": list((st.get("categories_failed") or {}).keys())[:20],
+          }
+          os.makedirs("results", exist_ok=True)
+          json.dump(summary, open("results/summary.json", "w", encoding="utf-8"), ensure_ascii=False, indent=1)
+          print(json.dumps(summary, ensure_ascii=False, indent=1))
+          PY
+
+      - name: פרסום התוצאות בענף results
+        if: always()
+        run: |
+          mkdir -p results
+          [ -d output ] && cp -r output results/ || true
+          cp calibrate.txt run.log results/ 2>/dev/null || true
+          for f in fetch_state.json coverage.json existing_trees.json link_resolution.json; do [ -f "data/$f" ] && cp "data/$f" results/ || true; done
+          git config user.name "chabadtrees-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git checkout -q --orphan results-tmp
+          git rm -rfq --cached . > /dev/null
+          git add -f results
+          git commit -qm "results from run ${{ github.run_id }} (${{ inputs.mode }})"
+          git push -f origin HEAD:results
+
+      - name: שמירת data כארטיפקט (7 ימים)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: data-${{ github.run_id }}
+          path: data
+          retention-days: 7
+          if-no-files-found: ignore
