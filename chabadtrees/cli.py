@@ -73,6 +73,11 @@ def estimate_png_size(chart, graph) -> tuple[int, int]:
 
 def cmd_fetch(args, cfg, store):
     client = make_client(cfg, args)
+    if getattr(args, "categories", None):
+        cfg["person_root_categories"] = [c.strip() for c in args.categories.split(",") if c.strip()]
+        args.recollect = True
+    if getattr(args, "depth", None) is not None:
+        cfg["max_category_depth"] = args.depth
     if args.recollect:
         state = store.load("fetch_state.json", {})
         state.pop("titles", None)
@@ -198,6 +203,8 @@ def build_parser() -> argparse.ArgumentParser:
     f.add_argument("--refresh", action="store_true", help="למשוך מחדש גם דפים שבמטמון")
     f.add_argument("--recollect", action="store_true", help="לאסוף מחדש את רשימת הכותרות מהקטגוריות")
     f.add_argument("--limit", type=int)
+    f.add_argument("--categories", help="קטגוריות שורש במקום 'אישים', מופרדות בפסיק (למשל 'משפחת רסקין,משפחת הלפרין')")
+    f.add_argument("--depth", type=int, help="עומק מקסימלי במעבר על תת-קטגוריות")
     f.add_argument("--titles", help="קובץ כותרות (שורה לכל דף) במקום מעבר על הקטגוריות")
     f.add_argument("--retry-sleep", type=float, default=30.0, help="המתנה לפני המעבר השני על כשלים")
     f.set_defaults(func=cmd_fetch)
@@ -222,6 +229,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     a = sub.add_parser("all", help="הכול ברצף: fetch, extract, graph, existing, render")
     for opt, kw in (("--refresh", {"action": "store_true"}), ("--recollect", {"action": "store_true"}), ("--limit", {"type": int}),
+                    ("--categories", {}), ("--depth", {"type": int}),
                     ("--titles", {}), ("--retry-sleep", {"type": float, "default": 30.0}), ("--png", {"action": "store_true"}),
                     ("--generations", {"type": int, "default": 3})):
         a.add_argument(opt, **kw)

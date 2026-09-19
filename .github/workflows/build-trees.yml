@@ -16,6 +16,9 @@ on:
       root:
         description: "אופציונלי: עץ צאצאים מאדם מסוים (כותרת הערך)"
         default: ""
+      categories:
+        description: "אופציונלי: קטגוריות שורש במקום 'אישים', מופרדות בפסיק (למשל 'משפחת רסקין')"
+        default: ""
 
 permissions:
   contents: write
@@ -57,7 +60,9 @@ jobs:
           set -o pipefail
           LIMIT=""
           if [ -n "${{ inputs.limit }}" ]; then LIMIT="--limit ${{ inputs.limit }}"; fi
-          python -m chabadtrees all --png --retry-sleep 60 $LIMIT 2>&1 | tee run.log || echo "exit code: $?" | tee -a run.log
+          CATS=()
+          if [ -n "${{ inputs.categories }}" ]; then CATS=(--categories "${{ inputs.categories }}"); fi
+          python -m chabadtrees all --png --retry-sleep 60 $LIMIT "${CATS[@]}" 2>&1 | tee run.log || echo "exit code: $?" | tee -a run.log
 
       - name: בנייה מחדש מהמטמון
         if: inputs.mode == 'render'

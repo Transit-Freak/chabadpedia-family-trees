@@ -58,11 +58,15 @@ def collect_person_titles(client: MediaWikiClient, cfg: dict, store: Store) -> l
     queue = [(c, 0) for c in cfg["person_root_categories"]]
     seen_cats = set(exclude)
     titles: dict[str, None] = {}
+    done_count = 0
     while queue:
         cat, depth = queue.pop(0)
         if cat in seen_cats:
             continue
         seen_cats.add(cat)
+        done_count += 1
+        if done_count % 25 == 0:
+            log.info("קטגוריות: %d נסרקו, %d בתור, %d כותרות עד כה", done_count, len(queue), len(titles))
         if cat in cats_done:
             members = cats_done[cat]
         else:
