@@ -12,7 +12,7 @@ h1{font-size:22px}h2{font-size:18px;margin-top:28px;border-bottom:1px solid #ccc
 table{border-collapse:collapse;font-size:13px;width:100%}th,td{border:1px solid #ddd;padding:4px 6px;vertical-align:top;text-align:right}
 th{background:#f0f0f0}tr.noref td{background:#fff8e6}tr.inferred td{background:#f3f3f3;color:#555}tr.conflict td{background:#ffe8e8}
 .tag{display:inline-block;padding:0 6px;border-radius:8px;font-size:11px;background:#eee;margin-left:3px}
-.exists{background:#d8f0d8}.partial{background:#fff0c0}.none{background:#eee}
+.exists{background:#d8f0d8}.draft{background:#e0e8f8}.partial{background:#fff0c0}.none{background:#eee}
 a{color:#06c;text-decoration:none}small{color:#666}
 """
 
@@ -39,7 +39,7 @@ def write_review(graph: dict, trees: list[dict], coverage: list[dict] | None, cf
         cov = cov_by_label.get(t["label"]) or cov_by_label.get(t["label"].replace("עץ ", ""))
         if cov:
             best = cov.get("best") or {}
-            cov_html = f'<span class="tag {cov["status"]}">{ {"exists": "קיים כבר", "partial": "חלקי", "none": "אין"}[cov["status"]] }</span>'
+            cov_html = f'<span class="tag {cov["status"]}">{ {"exists": "קיים כבר", "draft": "טיוטה במרחב משתמש", "partial": "חלקי", "none": "אין"}.get(cov["status"], cov["status"]) }</span>'
             if best.get("tree"):
                 cov_html += f' {html.escape(best["tree"])} ({best.get("score")})'
         else:

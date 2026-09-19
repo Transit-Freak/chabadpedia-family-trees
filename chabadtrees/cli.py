@@ -114,14 +114,18 @@ def cmd_existing(args, cfg, store):
     client = make_client(cfg, args)
     existing = find_existing_trees(client, cfg)
     store.save("existing_trees.json", existing)
-    print(f"נמצאו {len(existing['trees'])} דפי עץ משפחה; {len(existing['pages_with_ahnentafel'])} דפי אישים עם עץ לאדם אחד")
+    real = [t for t in existing["trees"] if t.get("is_tree", True)]
+    print(f"נמצאו {len(real)} דפי עץ משפחה ({sum(1 for t in real if t.get('draft'))} טיוטות); {len(existing['pages_with_ahnentafel'])} דפי אישים עם עץ לאדם אחד")
     graph = store.load("graph.json", None)
     if graph:
         cov = coverage(graph, existing, cfg)
         store.save("coverage.json", cov)
+        counts = {}
         for c in cov:
-            if c["status"] != "none":
+            counts[c["status"]] = counts.get(c["status"], 0) + 1
+            if c["status"] in ("exists", "draft"):
                 print(f"  {c['label']}: {c['status']} – {c['best']['tree']} ({c['best']['score']})")
+        print("סיכום כיסוי:", counts)
     return 0
 
 
@@ -178,7 +182,19 @@ def cmd_calibrate(args, cfg, store):
         for title, page in list(sample.items())[:400]:
             ex.extract(page.get("title", title), page.get("wikitext") or "")
         print("\nתבניות נפוצות בדפי אישים:", json.dumps(dict(sorted(ex.template_names.items(), key=lambda kv: -kv[1])[:15]), ensure_ascii=False))
-        print("שדות משפחה שלא זוהו בהגדרות:", json.dumps(ex.unknown_fields, ensure_ascii=False))
+        print("שדות משפחה שלא זוהו בהגדרות:", json.dumps({k[:40]: v for k, v in ex.unknown_fields.items()}, ensure_ascii=False))
+        # שכיחות הפרמטרים בשלוש התבניות הנפוצות – כדי לכייל את infobox_fields
+        from . import wikitext as wt
+        from collections import Counter
+        top = [n for n, _c in sorted(ex.template_names.items(), key=lambda kv: -kv[1])[:6]]
+        params: dict[str, Counter] = {n: Counter() for n in top}
+        for title, page in list(sample.items())[:400]:
+            for tpl in wt.find_templates(wt.strip_comments(page.get("wikitext") or "")):
+                if tpl["name"] in params:
+                    params[tpl["name"]].update(k[:30] for k in tpl["params"])
+        for n in top:
+            if params[n]:
+                print(f"פרמטרים של {{{{{n}}}}}:", json.dumps(dict(params[n].most_common(40)), ensure_ascii=False))
     return 0
 
 

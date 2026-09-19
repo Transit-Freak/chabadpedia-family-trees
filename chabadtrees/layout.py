@@ -88,6 +88,21 @@ class TreeBuilder:
         y = year_of(self.persons[pid]) if pid in self.persons else None
         return (0, y) if y else (1, 0)
 
+    def owner_of_in(self, members):
+        """ההורה שתחתיו ילד מוצג: בן שושלת > מי שיש לו ערך > גבר > מוקדם יותר."""
+        mi = getattr(self, "married_in", set())
+
+        def owner_of(child: str):
+            pars = [p for p in self._parents.get(child, []) if members is None or p in members]
+            if not pars:
+                return None
+
+            def rank(p):
+                info = self.persons.get(p, {})
+                return (1 if p in mi else 0, 0 if info.get("fetched") else 1, 0 if info.get("gender") == "m" else 1, self.sort_key(p), p)
+            return sorted(pars, key=rank)[0]
+        return owner_of
+
     def build(self, root: str, members: set[str] | None, expand: set[str] | None, max_nodes: int, max_depth: int | None = None) -> TreeNode:
         """members: מי מותר להופיע כצאצא (None = כולם). expand: מי מרחיבים את צאצאיו (None = לפי כללי המשפחה)."""
         visited = {root}
@@ -98,16 +113,7 @@ class TreeBuilder:
                 return pid in expand
             return True
 
-        def owner_of(child: str) -> str | None:
-            """ההורה שתחתיו הילד מוצג: מי שיש לו ערך > גבר > מוקדם יותר."""
-            pars = [p for p in self._parents.get(child, []) if members is None or p in members]
-            if not pars:
-                return None
-            def rank(p):
-                info = self.persons.get(p, {})
-                return (0 if info.get("fetched") else 1, 0 if info.get("gender") == "m" else 1, self.sort_key(p), p)
-            return sorted(pars, key=rank)[0]
-
+        owner_of = self.owner_of_in(members)
         self.owner_of = owner_of
 
         def build_node(pid: str, depth: int) -> TreeNode:

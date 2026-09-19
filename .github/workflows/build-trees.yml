@@ -112,7 +112,17 @@ jobs:
           mkdir -p results
           [ -d output ] && cp -r output results/ || true
           cp calibrate.txt run.log results/ 2>/dev/null || true
-          for f in fetch_state.json coverage.json existing_trees.json link_resolution.json; do [ -f "data/$f" ] && cp "data/$f" results/ || true; done
+          for f in fetch_state.json coverage.json existing_trees.json link_resolution.json relations.json graph.json; do [ -f "data/$f" ] && cp "data/$f" results/ || true; done
+          python - <<'PY'
+          import json, os
+          try:
+              pages = json.load(open("data/pages.json", encoding="utf-8"))
+          except Exception:
+              pages = {}
+          sample = dict(list(pages.items())[:80])
+          json.dump(sample, open("results/pages_sample.json", "w", encoding="utf-8"), ensure_ascii=False, indent=0)
+          print("pages in cache:", len(pages))
+          PY
           git config user.name "chabadtrees-bot"
           git config user.email "actions@users.noreply.github.com"
           git checkout -q --orphan results-tmp

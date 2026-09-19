@@ -102,10 +102,17 @@ def fetch_pages(client: MediaWikiClient, cfg: dict, store: Store, refresh: bool 
                 titles: list[str] | None = None, retry_sleep: float = 30.0) -> dict:
     state = store.load("fetch_state.json", {})
     pages: dict[str, dict] = store.load("pages.json", {})
+    if titles is None:
+        titles = state.get("titles")
+        if not titles and pages and not refresh:
+            # אין רשימת כותרות שמורה אבל יש מטמון דפים: משתמשים בו במקום לסרוק שוב את הקטגוריות
+            titles = list(pages)
+            log.warning("אין רשימת כותרות שמורה; משתמשים ב-%d הדפים שבמטמון (להרצה מלאה מחדש: --recollect)", len(titles))
+        if not titles:
+            titles = collect_person_titles(client, cfg, store)
+            state = store.load("fetch_state.json", {})     # הסריקה שמרה titles/categories – לא לדרוס אותם
     failed: dict[str, dict] = state.get("failed", {})
     missing: dict[str, str] = state.get("missing", {})
-    if titles is None:
-        titles = state.get("titles") or collect_person_titles(client, cfg, store)
     if limit:
         titles = titles[:limit]
     # כשלים מריצה קודמת נכנסים ראשונים לתור
@@ -295,12 +302,41 @@ def family_specs(graph: dict, cfg: dict) -> list[dict]:
     return specs
 
 
-def _with_unlinked_relatives(graph: dict, members: set[str]) -> set[str]:
+def family_surnames(graph: dict, spec: dict) -> set[str]:
+    names = set()
+    label = spec.get("label", "")
+    for pref in ("משפחת ", "עץ משפחת "):
+        if label.startswith(pref):
+            names.add(label[len(pref):].strip())
+    from collections import Counter
+    cnt = Counter(graph["persons"][m]["surname"] for m in spec["members"] if m in graph["persons"] and graph["persons"][m]["surname"])
+    names |= {sn for sn, n in cnt.most_common(3) if n >= 2}
+    return names
+
+
+def married_in(graph: dict, members: set[str], surnames: set[str], tb: TreeBuilder) -> set[str]:
+    """בני משפחה שנכנסו אליה בנישואין: אין להם הורה בקבוצה, יש להם בן זוג בקבוצה, ושם המשפחה שונה."""
+    out = set()
+    for pid in members:
+        p = graph["persons"].get(pid, {})
+        if any(par in members for par in tb._parents.get(pid, [])):
+            continue
+        if not any(sp in members for sp in tb._spouses.get(pid, [])):
+            continue
+        if p.get("surname") and p["surname"] in surnames:
+            continue
+        out.add(pid)
+    return out
+
+
+def _with_unlinked_relatives(graph: dict, members: set[str], exclude_parents_of: set[str] = frozenset()) -> set[str]:
     out = set(members)
     for e in graph["edges"]:
         if e["relation"] not in ("parent", "spouse") or e["confidence"] < 0.5:
             continue
         a, b = e["a"], e["b"]
+        if e["relation"] == "parent" and a in exclude_parents_of:
+            continue
         if a in members and b.startswith("~"):
             out.add(b)
         if b in members and a.startswith("~"):
@@ -313,17 +349,13 @@ def choose_roots(graph: dict, members: set[str], cfg: dict, tb: TreeBuilder) -> 
     persons = graph["persons"]
     min_conf = cfg.get("min_confidence", 0.5)
 
-    def owner_of(child: str) -> str | None:
-        pars = [p for p in tb._parents.get(child, []) if p in members]
-        if not pars:
-            return None
-        def rank(p):
-            info = persons.get(p, {})
-            return (0 if info.get("fetched") else 1, 0 if info.get("gender") == "m" else 1, tb.sort_key(p), p)
-        return sorted(pars, key=rank)[0]
+    owner_of = tb.owner_of_in(members)
 
     roots = []
+    mi = getattr(tb, "married_in", set())
     for pid in members:
+        if pid in mi:
+            continue
         pars = [e["b"] for e in parents_of(graph["edges"], pid) if e["confidence"] >= min_conf and e["b"] in members]
         if pars:
             continue
@@ -367,7 +399,17 @@ def build_trees(graph: dict, cfg: dict, only_label: str | None = None, root: str
     for spec in family_specs(graph, cfg):
         if only_label and only_label not in spec["label"]:
             continue
-        members = _with_unlinked_relatives(graph, spec["members"])
+        surnames = family_surnames(graph, spec)
+        tb.bloodline_surnames = surnames
+        mi = married_in(graph, spec["members"], surnames, tb)
+        tb.married_in = mi
+        members = _with_unlinked_relatives(graph, spec["members"], exclude_parents_of=mi)
+        # הורים (מקושרים) של מי שהתחתן לתוך המשפחה אינם חלק מהעץ
+        for pid in list(members):
+            if pid in mi:
+                for par in tb._parents.get(pid, []):
+                    if par in members and par not in spec["members"]:
+                        members.discard(par)
         roots = choose_roots(graph, members, cfg, tb)
         if not roots:
             continue

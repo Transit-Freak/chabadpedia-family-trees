@@ -162,6 +162,8 @@ class Extractor:
         self.unknown_fields: dict[str, int] = {}
         self.template_names: dict[str, int] = {}
         self.current_info: dict | None = None
+        # כשיש רשימה מלאה של דפי אישים (ריצה מלאה), קישור לדף שאינו ברשימה נחשב "לא אדם" ברשימות ובתבניות
+        self.strict_persons = len(self.known) >= 1000
 
     # ---------------------------------------------------------------- ציבורי
     def extract(self, title: str, wikitext_raw: str) -> tuple[list[Relation], dict]:
@@ -291,6 +293,8 @@ class Extractor:
                 continue
             hon = fragment[max(0, span[0] - 40):span[0]]
             gender = _gender_from_honorific(" ".join(hon.split()[-2:]))
+            if self.strict_persons and target not in self.known and not gender:
+                continue      # קישור לדף שאינו אישיות (מקום, מוסד) – לא אדם
             out.append((target, self._has_article(target), gender, wt.display_name(target)))
         if not links:
             name = clean_unlinked_name(wt.plain(fragment))
@@ -328,7 +332,10 @@ class Extractor:
                 if any(s <= m.start() < e and name.split(":")[0] == n for s, e, n in seen_spans):
                     continue
                 seen_spans.append((m.start(), m.end(), name.split(":")[0]))
+                self._doubtful_link = False
                 for rel in handler(self, m, title, clean):
+                    if self._doubtful_link:
+                        rel.confidence = min(rel.confidence, 0.35)
                     rel.source_page = title
                     rel.evidence = wt.plain(clean).strip()
                     rel.refs = wt.refs_in(sentence, refs)
@@ -344,6 +351,8 @@ class Extractor:
 
     def _from_list_line(self, title: str, line: str, raw: str, refs: list[str], add, sec_title: str, list_context: str = "") -> None:
         links = wt.wikilinks(line)
+        if self.strict_persons:
+            links = [l for l in links if l[0] in self.known or _gender_from_honorific(line[max(0, l[2][0] - 30):l[2][0]])]
         text = line
         if links:
             target, display, span = links[0]
@@ -410,6 +419,8 @@ class Extractor:
             target = wt.normalize_title(gd[f"t{n}"])
             if not wt.is_content_link(target) or _looks_like_year(target):
                 return None
+            if self.strict_persons and target not in self.known and not gender:
+                self._doubtful_link = True
             return target, self._has_article(target), gender, wt.display_name(target)
         name = clean_unlinked_name(gd.get(f"n{n}") or "")
         if not name or _looks_like_year(name) or len(name) < 2:
@@ -553,6 +564,17 @@ def h_child_of(self_, m, page, sentence):
 def h_born_to(self_, m, page, sentence):
     out = []
     subj = (page, True, None, wt.display_name(page))
+    gd = m.groupdict()
+    if (gd.get("k1") or "").startswith("הורי") and gd.get("n1") and not gd.get("t2") and not gd.get("n2"):
+        # "להוריו משה מאיר וחנה רבקה": מפצלים ב-ו' האחרונה שלפני שם
+        parts = re.split(r"\s+ו(?=[א-ת]{2,})", gd["n1"])
+        if len(parts) == 2 and all(clean_unlinked_name(x) for x in parts):
+            for i, (nm, g) in enumerate(zip(parts, ("m", "f"))):
+                name = clean_unlinked_name(nm)
+                r = _mk(subj, ("~" + name, False, g, name), "parent", m, self_, page, conf=0.8, relative_gender=g)
+                if r:
+                    out.append(r)
+            return out
     for n, g in ((1, "m"), (2, "f")):
         rel = self_.person_from_match(m, n)
         if rel:
@@ -655,6 +677,10 @@ def h_list_of_links(relation: str, direction: str, conf: float = 0.75, gender_fr
                 continue
             hon = rest[max(0, span[0] - 30):span[0]]
             g = _gender_from_honorific(" ".join(hon.split()[-2:]))
+            if self_.strict_persons and target not in self_.known and not g:
+                continue
+            if rest[max(0, span[0] - 1):span[0]] in ("ב", "מ", "ל") and not g:
+                continue      # "ב[[כפר חב"ד]]" – מקום, לא אדם
             if gender_from_word and not g:
                 g = "f" if w.startswith("בנות") or w.startswith("בת") or w.startswith("אחיות") else None
             rel = (target, self_._has_article(target), g, wt.display_name(target))
