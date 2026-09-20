@@ -748,10 +748,12 @@ class TestRealTextRules(unittest.TestCase):
 
     def test_descriptor_before_parenthesis_is_skipped(self):
         ex = self._strict()
-        out, _ = ex.extract("פלוני 1", "נולד בירושלים לר' ברוך יהודה וילהלם, שהיה מראשי התנועה, בנו של ר' משה וילהלם, מנהיג תנועת אגודת ישראל בארץ (בנו של [[שאול וילהלם]]).")
-        triples = {(r.relation, r.person, r.relative) for r in out}
-        self.assertIn(("parent", "~משה וילהלם", "שאול וילהלם"), triples, triples)
-        self.assertNotIn(("parent", "פלוני 1", "שאול וילהלם"), triples)
+        for text in ("נולד בירושלים לר' ברוך יהודה וילהלם, שהיה מראשי התנועה, בנו של ר' משה וילהלם, מנהיג תנועת אגודת ישראל בארץ (בנו של [[שאול וילהלם]]).",
+                     "נולד בירושלים לר' ברוך יהודה וילהלם, שהיה מראשי התנועה, בנו של ר' משה וילהלם, מנהיג תנועת [[אגודת ישראל]] בארץ (בנו של [[שאול וילהלם]])."):
+            out, _ = ex.extract("פלוני 1", text)
+            triples = {(r.relation, r.person, r.relative) for r in out}
+            self.assertIn(("parent", "~משה וילהלם", "שאול וילהלם"), triples, triples)
+            self.assertNotIn(("parent", "פלוני 1", "שאול וילהלם"), triples)
 
     def test_segal_in_the_middle_of_a_name(self):
         ex = self._strict()
@@ -787,8 +789,9 @@ class TestRealTextRules(unittest.TestCase):
         from dataclasses import asdict
         from chabadtrees.extract import Relation
         from chabadtrees.graph import build_graph
+        # שם משפחה נפוץ (20 ערכים) – מיזוג רק בזכות השם האמצעי "אורי"
         pages = {t: {"title": t, "gender_votes": {"m": 3, "f": 0}, "born": None, "died": None, "categories": [], "surname": "בלוי"}
-                 for t in ("יצחק שלמה בלוי", "עמרם בלוי", "יוסף ישראל בלוי")}
+                 for t in ("יצחק שלמה בלוי", "עמרם בלוי", "יוסף ישראל בלוי") + tuple(f"פלוני {i} בלוי" for i in range(20))}
         rels = [asdict(Relation("משה אורי בלוי", "יצחק שלמה בלוי", "parent", "יצחק שלמה בלוי", "*בנו, הרב משה אורי בלוי", pattern="child_is",
                                 confidence=0.6, person_gender="m", person_has_article=False)),
                 asdict(Relation("~ברוך יהודה", "משה אורי בלוי", "parent", "יוסף ישראל בלוי", "להוריו ר' ברוך יהודה (בנו של משה אורי בלוי)", pattern="child_of",

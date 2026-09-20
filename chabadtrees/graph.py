@@ -556,6 +556,10 @@ def _merge_unlinked_by_name(persons: dict, edges: dict, max_surname_pages: int =
             return True                      # שני אבות שונים
         return False
 
+    # שתי רמות: שם מלא זהה עם שם אמצעי ("משה אורי בלוי" = "משה אורי בלויא") – גם בשם משפחה נפוץ, ובלי קשר לאזכורי
+    # "משה בלוי" אחרים; שם בלי שם אמצעי מול שם עם שם אמצעי ("אריה הרטמן" / "אריה אברהם הרטמן") – רק בשם משפחה נדיר,
+    # ורק כשאין אזכור שלישי באותו שם
+    exact: dict[tuple[str, ...], list[str]] = defaultdict(list)
     groups: dict[tuple[str, str], list[str]] = defaultdict(list)
     for pid, p in persons.items():
         if not (pid.startswith("~") or not p.get("fetched")):
@@ -564,13 +568,22 @@ def _merge_unlinked_by_name(persons: dict, edges: dict, max_surname_pages: int =
         if len(w) < 2:
             continue
         groups[(w[0], w[-1])].append(pid)
-    remap = {}
+        if len(w) >= 3:
+            exact[tuple(w)].append(pid)
+    pairs: list[tuple[str, str]] = []
+    for w, ids in exact.items():
+        if len(ids) == 2 and w[-1] not in given_names and surname_pages.get(w[-1], 0) >= 1:
+            pairs.append((ids[0], ids[1]))
     for (first, surname), ids in groups.items():
         if surname in given_names or not 1 <= surname_pages.get(surname, 0) <= max_surname_pages:
             continue
-        if len(ids) != 2 or not nested(words_of(ids[0]), words_of(ids[1])):
+        if len(ids) != 2 or not nested(words_of(ids[0]), words_of(ids[1])) or (ids[0], ids[1]) in pairs:
             continue
-        x, y = ids
+        pairs.append((ids[0], ids[1]))
+    remap = {}
+    for x, y in pairs:
+        if x in remap or y in remap:
+            continue
         gx, gy = gender(x), gender(y)
         if "f" in (gx, gy) or "m" not in (gx, gy):
             continue
