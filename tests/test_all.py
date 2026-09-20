@@ -23,6 +23,7 @@ from chabadtrees.existing import find_existing_trees, coverage  # noqa: E402
 
 B3 = "'" * 3
 CFG = load_config(path="/nonexistent")
+CFG["include_unlinked"] = True          # הבדיקות הוותיקות בודקות את המצב המלא; מצב הפרטיות נבדק בנפרד
 ALTER = 'רבי שניאור זלמן מלאדי (אדמו"ר הזקן)'
 TZEMACH = 'רבי מנחם מענדל שניאורסון (אדמו"ר הצמח צדק)'
 KNOWN = {ALTER, TZEMACH, "הרבנית דבורה לאה", "רבי יהודה לייב שניאורסון", "הרבנית רבקה"}
@@ -269,6 +270,20 @@ class TestPipelineWithMock(MockServerMixin, unittest.TestCase):
         self.assertEqual(anc[0]["slots"]["f"], "רבי לוי יצחק שניאורסון")
         self.assertEqual(anc[0]["slots"]["fff"], "רבי לוי יצחק שניאורסון (בן רבי ברוך שלום)")
         self.assertIn("| אבא = [[רבי לוי יצחק שניאורסון]]", anc[0]["wikitext"])
+
+    def test_privacy_mode_hides_people_without_articles(self):
+        cfg = dict(CFG); cfg["include_unlinked"] = False
+        trees = build_trees(self.graph, cfg)
+        self.assertTrue(trees)
+        for t in trees:
+            shown = set(t["members_shown"]) | set(t["spouses_shown"])
+            unl = {p for p in shown if p.startswith("~")}
+            anon = {b["person"] for b in t["chart"].boxes.values() if b["person"] in getattr(t["chart"], "anonymous", ())}
+            self.assertTrue(unl <= anon, f"אנשים בלי ערך בעץ {t['title']}: {unl - anon}")
+            for p in unl:
+                self.assertNotIn(self.graph["persons"][p]["name"], t["wikitext"], "שם של אדם בלי ערך הודלף לעץ")
+            self.assertNotIn("ילדים נוספים", t["wikitext"])
+            self.assertNotIn("ילדים:", t["wikitext"])
 
     def test_redirect_links_resolve_to_canonical_title(self):
         # ערך שמקשר ל"(אב הרבי)" (הפניה) מתמזג עם הערך האמיתי ולא יוצר אדם כפול

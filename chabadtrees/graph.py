@@ -359,6 +359,13 @@ def _consistency(persons: dict, edges: dict) -> None:
                 e["flags"].append("ההורה נפטר לפני לידת הילד")
                 e["confidence"] = min(e["confidence"], 0.3)
     _break_cycles(persons, edges)
+    # בני זוג באותו מגדר – טעות חילוץ (הנושא של "נישאה ל..." נפל על הדף במקום על הבת)
+    for e in edges.values():
+        if e["relation"] == "spouse":
+            ga, gb = persons[e["a"]].get("gender"), persons[e["b"]].get("gender")
+            if ga and gb and ga == gb:
+                e["flags"].append("בני זוג באותו מגדר")
+                e["confidence"] = min(e["confidence"], 0.3)
     # הורה שהוא גם בן זוג
     spouse_pairs = {(e["a"], e["b"]) for e in edges.values() if e["relation"] == "spouse"}
     for e in edges.values():

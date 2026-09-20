@@ -76,6 +76,8 @@ def spouse_inline(node, pid: str, chart: Chart, graph: dict, cfg: dict, existing
     ccfg = cfg["chart"]
     boxed = {b["person"] for b in chart.boxes.values() if b.get("node") is node and b["role"] == "spouse"}
     spouses = [m.spouse for m in node.marriages if m.spouse and m.spouse not in boxed]
+    if getattr(chart, "hide_unlinked", False):
+        spouses = [sp for sp in spouses if not sp.startswith("~")]
     if not spouses:
         return ""
     person = graph["persons"][pid]
@@ -83,7 +85,9 @@ def spouse_inline(node, pid: str, chart: Chart, graph: dict, cfg: dict, existing
     for sp in spouses:
         sperson = graph["persons"].get(sp, {"name": sp, "title": None})
         label = person_label(sperson, cfg, years=False)
-        if person.get("gender") == "f":
+        # מגדר לפי שני הצדדים: בת (או בן זוג גבר) → "אשת X"; בן (או בת זוג אישה) → "אשתו: X"
+        pg, sg = person.get("gender"), sperson.get("gender")
+        if pg == "f" or (pg is None and sg == "m"):
             parts.append(f"{ccfg.get('wife_of', 'אשת')} {label}")
         elif cfg["chart"].get("show_sons_wives", True):
             parts.append(f"{ccfg.get('husband_label', 'אשתו:')} {label}")
@@ -101,7 +105,10 @@ def box_content(chart: Chart, bid: str, graph: dict, cfg: dict, with_refs: bool 
     info = chart.boxes[bid]
     pid = info["person"]
     person = graph["persons"][pid]
-    label = person_label(person, cfg)
+    if pid in getattr(chart, "anonymous", ()):
+        label = cfg.get("anonymous_label", "ללא ערך")       # חוליה הכרחית בלי ערך – בלי שם
+    else:
+        label = person_label(person, cfg)
     node = info.get("node")
     if node is not None and info["role"] == "member":
         label += spouse_inline(node, pid, chart, graph, cfg, existing)

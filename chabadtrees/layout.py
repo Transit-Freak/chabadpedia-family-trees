@@ -49,6 +49,8 @@ class Chart:
     width: int = 0
     height: int = 0
     self_tree: str | None = None     # שם דף העץ שנבנה (לא מצביעים עליו כ"עץ קיים")
+    anonymous: set = field(default_factory=set)   # אנשים בלי ערך שמוצגים כקופסה ריקה (חוליה הכרחית)
+    hide_unlinked: bool = False      # בני זוג/ילדים בלי ערך אינם מוזכרים
 
     def add_line(self, row: int, col: int, dirs: set) -> None:
         cell = self.cells.get((row, col))
@@ -134,6 +136,8 @@ class TreeBuilder:
         def make_node(pid: str, depth: int) -> TreeNode:
             node = TreeNode(person=pid, depth=depth)
             spouses = list(dict.fromkeys(self._spouses.get(pid, [])))
+            if getattr(self, "hide_unlinked", False):
+                spouses = [s for s in spouses if not s.startswith("~")]
             kids = [c for c in dict.fromkeys(self._children.get(pid, [])) if members is None or c in members]
             kids = [c for c in kids if c not in visited and owner_of(c) == pid]
             kids = sorted(kids, key=self.sort_key)
@@ -142,6 +146,8 @@ class TreeBuilder:
             for c in kids:
                 others = [p for p in self._parents.get(c, []) if p != pid]
                 other = next((o for o in others if o in spouses), None)
+                if other is None and others and getattr(self, "hide_unlinked", False):
+                    others = [o for o in others if not o.startswith("~")]
                 if other is None and others:
                     pg = self.persons.get(pid, {}).get("gender")
                     cands = [o for o in others if self.persons.get(o, {}).get("gender") in (None, ("f" if pg == "m" else "m" if pg == "f" else None))

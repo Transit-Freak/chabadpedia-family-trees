@@ -497,6 +497,10 @@ def build_trees(graph: dict, cfg: dict, only_label: str | None = None, root: str
                 for par in tb._parents.get(pid, []):
                     if par in members and par not in spec["members"]:
                         members.discard(par)
+        tb.anonymous = set()
+        tb.hide_unlinked = not cfg.get("include_unlinked", False)
+        if tb.hide_unlinked:
+            members, tb.anonymous = _drop_unlinked(members, tb)
         roots = choose_roots(graph, members, cfg, tb)
         if not roots:
             continue
@@ -515,7 +519,7 @@ def build_trees(graph: dict, cfg: dict, only_label: str | None = None, root: str
             continue
         title = f"עץ {spec['label']}" if spec["label"].startswith("משפחת") else f"עץ משפחת {spec['label']}"
         for sub_title, sub_forest, parent_title in split_forest(graph, cfg, title, forest, max_nodes):
-            rec = _tree_record(graph, cfg, sub_title, sub_forest, spec, existing)
+            rec = _tree_record(graph, cfg, sub_title, sub_forest, spec, existing, anonymous=tb.anonymous, hide_unlinked=tb.hide_unlinked)
             if parent_title:
                 rec["kind"], rec["parent_tree"] = "branch", parent_title
             out.append(rec)
@@ -529,6 +533,42 @@ _GIVEN_SECOND = {"מענדל", "מנדל", "זלמן", "מושקא", "לאה", "
                  "שמואל", "שניאור", "בנימין", "נתן", "אריה", "פייביש", "שרגא", "טודרוס", "בצלאל", "אלעזר", "יהושע", "יחיאל", "מיכל",
                  "גיטל", "ביילא", "בילא", "פריידא", "רייזל", "ליבא", "שיינא", "שטערנא", "נחמה", "ברכה", "חוה", "שפרה", "בתיה",
                  "טובה", "רעכיל", "מושקה", "פעשא", "זיסל", "מינדל", "בלומה", "יוכבד", "צפורה", "ציפורה"}
+
+
+def _drop_unlinked(members: set[str], tb: TreeBuilder) -> tuple[set[str], set[str]]:
+    """פרטיות: מי שאין לו ערך יוצא מהעץ. נשאר (בלי שם) רק מי שבלעדיו העץ מתפרק: אדם בלי ערך שיש לו
+    לפחות שני ענפי ילדים עם צאצאים בעלי ערך, או שהוא החוליה היחידה בין הורה עם ערך לצאצא עם ערך."""
+    linked = {m for m in members if not m.startswith("~")}
+    memo: dict[str, bool] = {}
+
+    def has_linked_desc(p: str, stack: frozenset = frozenset()) -> bool:
+        if p in memo:
+            return memo[p]
+        if p in stack:
+            return False
+        res = False
+        for c in tb._children.get(p, []):
+            if c in members and (c in linked or has_linked_desc(c, stack | {p})):
+                res = True
+                break
+        memo[p] = res
+        return res
+
+    keep = set(linked)
+    anonymous: set[str] = set()
+    changed = True
+    while changed:
+        changed = False
+        for p in members:
+            if p in keep or not p.startswith("~"):
+                continue
+            branches = [c for c in tb._children.get(p, []) if c in members and (c in linked or has_linked_desc(c))]
+            parent_kept = any(par in keep for par in tb._parents.get(p, []))
+            if len(branches) >= 2 or (branches and parent_kept):
+                keep.add(p)
+                anonymous.add(p)
+                changed = True
+    return keep, anonymous
 
 
 def _subtree_size(node: TreeNode) -> int:
@@ -650,11 +690,14 @@ def _redepth(node: TreeNode, depth: int) -> None:
             _redepth(c, depth + 1)
 
 
-def _tree_record(graph: dict, cfg: dict, title: str, forest: list[TreeNode], spec: dict, existing: dict | None = None) -> dict:
+def _tree_record(graph: dict, cfg: dict, title: str, forest: list[TreeNode], spec: dict, existing: dict | None = None,
+                 anonymous: set[str] | None = None, hide_unlinked: bool = False) -> dict:
     box_ids: dict = {}
     chart = layout_forest(forest, box_ids, spouse_style=cfg["chart"].get("spouse_style", "inline"),
                           root_spouse_boxes=cfg["chart"].get("root_spouse_boxes", True))
     chart.self_tree = "תבנית:" + title
+    chart.anonymous = set(anonymous or ())
+    chart.hide_unlinked = hide_unlinked
     shown = [n.person for t in forest for n in t.all_nodes()]
     spouses = [m.spouse for t in forest for n in t.all_nodes() for m in n.marriages if m.spouse]
     def disp(pid: str) -> str:
