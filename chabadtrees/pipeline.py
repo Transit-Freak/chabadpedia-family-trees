@@ -363,29 +363,58 @@ def family_surnames(graph: dict, spec: dict) -> set[str]:
     return names
 
 
-def bloodline_members(graph: dict, members: set[str], surnames: set[str], tb: TreeBuilder) -> set[str]:
-    """מי שייך לעץ של המשפחה: נושאי שם המשפחה, הוריהם וצאצאיהם (גם דרך בנות, בכל שם משפחה), ובני זוגם.
-    קרובים של חתנים וכלות שנמצאים בקטגוריה (אבי החתן, אחיו) אינם חלק מהעץ."""
+def label_person(graph: dict, spec: dict) -> str | None:
+    """"משפחת אדמו"ר הזקן" – הקטגוריה קרויה על שם אדם, לא שם משפחה: מחזיר את הערך שלו (אם הוא יחיד)."""
+    label = spec.get("label", "")
+    base = label[len("משפחת "):].strip() if label.startswith("משפחת ") else ""
+    if not base:
+        return None
+    pat = re.compile(r"\((?:כ\"ק |רבי |הרב |ר' )?" + re.escape(base) + r"\)$")
+    cands = [t for t, p in graph["persons"].items()
+             if p.get("fetched") and (t == base or wt.display_name(t) == base or pat.search(t))]
+    return cands[0] if len(cands) == 1 else None
+
+
+def bloodline_members(graph: dict, members: set[str], surnames: set[str], tb: TreeBuilder, seeds: set[str] | None = None) -> set[str]:
+    """מי שייך לעץ של המשפחה.
+
+    זרע: נושאי שם המשפחה (או האדם שהקטגוריה קרויה על שמו). אבות: מהזרע למעלה דרך קו האב בלבד (אב, אבי האב...),
+    או דרך הורה בשם המשפחה. צאצאים: מהזרע ומהאבות למטה, בכל שם משפחה (גם דרך בנות). בני זוגם מצטרפים בסוף,
+    ומהם לא ממשיכים – כך אבי החתן ואחיו, שנמצאים בקטגוריה, נשארים בחוץ, וגם לא מטפסים מנכד אל אביו החתן."""
     def sn(pid: str) -> str:
         return graph["persons"].get(pid, {}).get("surname") or ""
-    core = {m for m in members if sn(m) and any(_similar_surname(sn(m), x) for x in surnames)}
-    # "חיה מושקא שניאורסון (אשת אדמו"ר הצמח צדק)": שם נישואין – היא בת זוג, לא זרע; אחרת אביה (אלטשולר) היה נכנס לעץ
-    for m in list(core):
-        p = graph["persons"].get(m, {})
-        if p.get("gender") == "f" and any(sp in core for sp in tb._spouses.get(m, [])) \
-                and not any(par in core for par in tb._parents.get(m, [])):
-            core.discard(m)
-    if not core:
+
+    def family_name(pid: str) -> bool:
+        return bool(sn(pid)) and any(_similar_surname(sn(pid), x) for x in surnames)
+
+    if seeds is None:
+        seeds = {m for m in members if family_name(m)}
+        # "חיה מושקא שניאורסון (אשת אדמו"ר הצמח צדק)": שם נישואין – היא בת זוג, לא זרע; אחרת אביה (אלטשולר) היה נכנס לעץ
+        for m in list(seeds):
+            p = graph["persons"].get(m, {})
+            if p.get("gender") == "f" and any(sp in seeds for sp in tb._spouses.get(m, [])) \
+                    and not any(par in seeds for par in tb._parents.get(m, [])):
+                seeds.discard(m)
+    seeds = {m for m in seeds if m in members}
+    if not seeds:
         return set(members)
-    changed = True
-    while changed:
-        changed = False
-        for m in members:
-            if m in core:
-                continue
-            if any(p in core for p in tb._parents.get(m, [])) or any(c in core for c in tb._children.get(m, [])):
-                core.add(m)
-                changed = True
+    ancestors: set[str] = set()
+    stack = list(seeds)
+    while stack:
+        m = stack.pop()
+        for par in tb._parents.get(m, []):
+            if par in members and par not in ancestors and par not in seeds \
+                    and (graph["persons"].get(par, {}).get("gender") != "f" or family_name(par)):
+                ancestors.add(par)
+                stack.append(par)
+    core = set(seeds) | ancestors
+    stack = list(core)
+    while stack:
+        m = stack.pop()
+        for c in tb._children.get(m, []):
+            if c in members and c not in core:
+                core.add(c)
+                stack.append(c)
     spouses = {sp for m in core for sp in tb._spouses.get(m, []) if sp in members}
     return core | spouses
 
@@ -483,9 +512,13 @@ def build_trees(graph: dict, cfg: dict, only_label: str | None = None, root: str
         if only_label and only_label not in spec["label"]:
             continue
         surnames = family_surnames(graph, spec)
+        seed_person = label_person(graph, spec)          # "משפחת אדמו"ר הזקן" – מתחילים ממנו, לא משם משפחה
+        if seed_person and graph["persons"][seed_person].get("surname"):
+            surnames = {graph["persons"][seed_person]["surname"]}
         tb.bloodline_surnames = surnames
-        # רק השושלת: נושאי השם, הוריהם, צאצאיהם ובני זוגם – לא קרובי החתנים שבקטגוריה
-        core = bloodline_members(graph, _with_unlinked_relatives(graph, spec["members"]), surnames, tb)
+        # רק השושלת: הזרע, אבותיו בקו האב, צאצאיו ובני זוגם – לא קרובי החתנים שבקטגוריה
+        core = bloodline_members(graph, _with_unlinked_relatives(graph, spec["members"]), surnames, tb,
+                                 seeds={seed_person} if seed_person else None)
         # "נכנס בנישואין" נבדק גם מול בני זוג בלי ערך (בת המשפחה שאין לה ערך) – אחרת חתן נחשב שורש
         mi = married_in(graph, core, surnames, tb)
         tb.married_in = mi
