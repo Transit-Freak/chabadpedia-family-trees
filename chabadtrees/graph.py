@@ -359,6 +359,23 @@ def _consistency(persons: dict, edges: dict) -> None:
                 e["flags"].append("ההורה נפטר לפני לידת הילד")
                 e["confidence"] = min(e["confidence"], 0.3)
     _break_cycles(persons, edges)
+    # סב שנרשם כהורה: "אימה רחל, בתו של ר' דוד" – הדף קיבל גם את ר' דוד כהורה. אם הורה אחד הוא ילד של הורה אחר
+    # של אותו אדם, ההורה השני הוא סב – מורידים את הקשר הזה.
+    # רק קשרים מוצקים מעידים: לא קשר שהוסק, ולא קשר שכל ראיותיו נפתרו משם-תצוגה (שם שחוזר במשפחה).
+    def solid(e: dict) -> bool:
+        evs = e.get("evidence") or []
+        return e["confidence"] >= 0.5 and not e.get("inferred") and not (evs and all(ev.get("alias") for ev in evs))
+    parents_of: dict[str, set[str]] = defaultdict(set)
+    for e in edges.values():
+        if e["relation"] == "parent" and solid(e):
+            parents_of[e["a"]].add(e["b"])
+    for child, es in by_child.items():
+        for e in es:
+            if e["confidence"] < 0.5:
+                continue
+            if any(e["b"] in parents_of.get(p, ()) for p in parents_of.get(child, ()) if p != e["b"]):
+                e["flags"].append("סב שנרשם כהורה")
+                e["confidence"] = min(e["confidence"], 0.3)
     # בני זוג באותו מגדר – טעות חילוץ (הנושא של "נישאה ל..." נפל על הדף במקום על הבת)
     for e in edges.values():
         if e["relation"] == "spouse":

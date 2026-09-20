@@ -406,6 +406,42 @@ class TestRealTextRules(unittest.TestCase):
             if (r.relation, r.person) == ("parent", "~חנה"):
                 self.assertGreaterEqual(r.confidence, 0.5)
 
+    def test_mother_with_full_spelling_is_subject(self):
+        # "אימה רחל וילהלם בתו של הרב שאול וילהלם" – רחל היא הבת של שאול, לא הערך
+        ex = self._strict()
+        for text in ("פלוני 1 הייתה בתם של אביה הרב שאול וילהלם ושל אימה חנה אמסעל בתו של הרב [[שמואל גליצנשטיין]].",
+                     "פלוני 1 נולדה בשנת תרע\"ד לאביה הרב שאול וילהלם, ולאימה חנה אמסעל, בתו של הרב [[שמואל גליצנשטיין]], ונקראה על שם סבתה."):
+            out, _ = ex.extract("פלוני 1", text)
+            triples = {(r.relation, r.person, r.relative) for r in out}
+            self.assertIn(("parent", "פלוני 1", "שאול וילהלם"), triples, text)
+            self.assertIn(("parent", "פלוני 1", "~חנה אמסעל"), triples, text)
+            self.assertIn(("parent", "~חנה אמסעל", "שמואל גליצנשטיין"), triples, text)
+            self.assertNotIn(("parent", "פלוני 1", "שמואל גליצנשטיין"), triples, text)
+
+    def test_uncle_and_birth_order_are_not_parents(self):
+        ex = self._strict()
+        out, _ = ex.extract("פלוני 1", "את ההתקשרות קיבל מדודו, אחי אביו, הרב [[שאול וילהלם]]. נולד בין [[חנה וילהלם]] ל[[שמואל גליצנשטיין]].")
+        triples = {(r.relation, r.person, r.relative) for r in out}
+        self.assertNotIn(("parent", "פלוני 1", "שאול וילהלם"), triples)
+        self.assertNotIn(("parent", "פלוני 1", "שמואל גליצנשטיין"), triples)
+        self.assertNotIn(("parent", "פלוני 1", "חנה וילהלם"), triples)
+
+    def test_grandparent_recorded_as_parent_is_demoted(self):
+        from chabadtrees.graph import _consistency
+        persons = {k: {"name": k, "gender": g, "born": None, "died": None, "flags": []} for k, g in
+                   (("זלדה", "f"), ("רחל", "f"), ("שלום", "m"), ("דוד", "m"))}
+        edges = {
+            "1": {"a": "זלדה", "b": "רחל", "relation": "parent", "confidence": 0.9, "flags": [], "evidence": []},
+            "2": {"a": "זלדה", "b": "שלום", "relation": "parent", "confidence": 0.9, "flags": [], "evidence": []},
+            "3": {"a": "רחל", "b": "דוד", "relation": "parent", "confidence": 0.9, "flags": [], "evidence": []},
+            "4": {"a": "זלדה", "b": "דוד", "relation": "parent", "confidence": 0.84, "flags": [], "evidence": []},
+        }
+        _consistency(persons, edges)
+        self.assertLess(edges["4"]["confidence"], 0.5)
+        self.assertIn("סב שנרשם כהורה", edges["4"]["flags"])
+        for k in ("1", "2", "3"):
+            self.assertGreaterEqual(edges[k]["confidence"], 0.9)
+
     def test_wife_of_link_in_list(self):
         ex = self._strict()
         out, _ = ex.extract("אשר וילהלם", "==משפחתו==\n* חנה ליבא, אשת [[שמואל גליצנשטיין]]\n")

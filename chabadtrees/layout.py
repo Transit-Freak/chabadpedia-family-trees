@@ -105,7 +105,9 @@ class TreeBuilder:
 
             def rank(p):
                 info = self.persons.get(p, {})
-                return (1 if p in mi else 0, 0 if info.get("fetched") else 1, 0 if info.get("gender") == "m" else 1, self.sort_key(p), p)
+                # הורה שהוא עצמו ילד של "הורה" אחר ברשימה הוא ההורה האמיתי; השני הוא סב שנרשם בטעות כהורה
+                grandparent = any(q in self._children.get(p, []) for q in pars if q != p)
+                return (1 if grandparent else 0, 1 if p in mi else 0, 0 if info.get("fetched") else 1, 0 if info.get("gender") == "m" else 1, self.sort_key(p), p)
             return sorted(pars, key=rank)[0]
         return owner_of
 

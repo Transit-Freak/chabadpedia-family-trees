@@ -369,9 +369,15 @@ def label_person(graph: dict, spec: dict) -> str | None:
     base = label[len("משפחת "):].strip() if label.startswith("משפחת ") else ""
     if not base:
         return None
+    members = spec.get("members") or set()
+    if any(_similar_surname(base, graph["persons"].get(m, {}).get("surname") or "") for m in members):
+        return None      # שם משפחה רגיל ("משפחת רבינוביץ"), גם אם למישהו יש הבהרה "(רבינוביץ)"
     pat = re.compile(r"\((?:כ\"ק |רבי |הרב |ר' )?" + re.escape(base) + r"\)$")
     cands = [t for t, p in graph["persons"].items()
              if p.get("fetched") and (t == base or wt.display_name(t) == base or pat.search(t))]
+    if not cands and base.startswith("ה"):
+        # "משפחת המגיד" → "המגיד ממזריטש"
+        cands = [t for t, p in graph["persons"].items() if p.get("fetched") and t.startswith(base + " מ")]
     return cands[0] if len(cands) == 1 else None
 
 
@@ -424,15 +430,17 @@ def married_in(graph: dict, members: set[str], surnames: set[str], tb: TreeBuild
     out = set()
     for pid in members:
         p = graph["persons"].get(pid, {})
-        if any(par in members for par in tb._parents.get(pid, [])):
-            continue
         sps = [sp for sp in tb._spouses.get(pid, []) if sp in members]
         if not sps:
             continue
+        has_parents = any(par in members for par in tb._parents.get(pid, []))
         spouse_is_descendant = any(any(par in members for par in tb._parents.get(sp, [])) for sp in sps)
-        if p.get("surname") and p["surname"] in surnames and not spouse_is_descendant:
-            continue
-        out.add(pid)
+        family_name = bool(p.get("surname")) and any(_similar_surname(p["surname"], x) for x in surnames)
+        if family_name and not spouse_is_descendant:
+            continue                      # בן השושלת שנשוי לאדם מבחוץ
+        if has_parents and (family_name or not spouse_is_descendant):
+            continue                      # צאצא (או נישואי קרובים בתוך השושלת)
+        out.add(pid)                      # בן זוג של צאצא – מוצג בתוך הקופסה של בן הזוג, לא כשורש
     return out
 
 
@@ -466,6 +474,8 @@ def choose_roots(graph: dict, members: set[str], cfg: dict, tb: TreeBuilder) -> 
         pars = [e["b"] for e in parents_of(graph["edges"], pid) if e["confidence"] >= min_conf and e["b"] in members]
         if pars:
             continue
+        if any(sp in members and any(par in members for par in tb._parents.get(sp, [])) for sp in tb._spouses.get(pid, [])):
+            continue      # בן זוגו צאצא בעץ – מקומו לצד בן הזוג, לא כשורש נפרד
         owned = [c for c in tb._children.get(pid, []) if c in members and owner_of(c) == pid]
         if not owned:
             continue
@@ -524,12 +534,19 @@ def build_trees(graph: dict, cfg: dict, only_label: str | None = None, root: str
         tb.married_in = mi
         members = _with_unlinked_relatives(graph, core & spec["members"] | {m for m in core if m.startswith("~")}, exclude_parents_of=mi)
         members &= core | {m for m in members if m.startswith("~")}
-        # הורים (מקושרים) של מי שהתחתן לתוך המשפחה אינם חלק מהעץ
+        # הורים ואחים של מי שהתחתן לתוך המשפחה אינם חלק מהעץ (גם כשהם בקטגוריה), אלא אם הם מהשושלת עצמה
+        def in_bloodline(x: str) -> bool:
+            sn = graph["persons"].get(x, {}).get("surname") or ""
+            return bool(sn) and any(_similar_surname(sn, y) for y in surnames)
         for pid in list(members):
             if pid in mi:
                 for par in tb._parents.get(pid, []):
-                    if par in members and par not in spec["members"]:
+                    if par in members and not in_bloodline(par) and not any(
+                            c in members and c not in mi and any(gp in members for gp in tb._parents.get(par, [])) for c in tb._children.get(par, [])):
                         members.discard(par)
+                        for sib in tb._children.get(par, []):
+                            if sib in members and sib != pid and not in_bloodline(sib) and not any(sp in members for sp in tb._spouses.get(sib, [])):
+                                members.discard(sib)
         tb.anonymous = set()
         tb.hide_unlinked = not cfg.get("include_unlinked", False)
         if tb.hide_unlinked:
