@@ -467,6 +467,8 @@ class Extractor:
         clean = wt.remove_ref_tokens(sentence).replace(BOLD3, "").replace(BOLD2, "")
         self._in_list = clean.lstrip().startswith(("*", "#"))
         base_conf = 0.75 if in_family_section else 0.7
+        # "* חתנו, ר' אריה הרטמן - ביתר עילית, בנו של [[יוסף הרטמן]]": מה שאחרי ראש הפריט מדבר על ראש הפריט, לא על הדף
+        head, head_end = self._list_head(clean) if self._in_list else (None, 0)
         seen_spans: list[tuple[int, int, str]] = []
         for name, regex, handler in self.patterns:
             for m in regex.finditer(clean):
@@ -479,6 +481,9 @@ class Extractor:
                 self._alias_used = False
                 self._pending = []
                 rels = list(handler(self, m, title, clean))
+                if head and m.start() >= head_end:
+                    for rel in rels + self._pending:
+                        _retarget(rel, title, head)
                 if self._alias_used:
                     for rel in rels + self._pending:
                         rel.alias = True
@@ -506,6 +511,38 @@ class Extractor:
         # רשימות בקטעי משפחה: "* [[X]] – בנו", או תחת "ילדיו:"
         if (in_family_section or list_context) and clean.lstrip().startswith(("*", "#")):
             self._from_list_line(title, clean, sentence, refs, add, sec_title, list_context)
+
+    def _list_head(self, clean: str) -> tuple[tuple | None, int]:
+        """ראש פריט רשימה – האדם שהפריט עוסק בו – ואיפה הוא נגמר. "* בתו, רחל הרטמן - קריית מלאכי, חמיה הרב [[X]]" →
+        (~רחל הרטמן), אחרי "רחל הרטמן". רק כשיש המשך אחרי הראש; אחרת אין מה לשייך."""
+        mh = _LIST_HEAD_ROLE_RE.match(clean)
+        if not mh:
+            return None, 0
+        start = mh.end()
+        rest = clean[start:]
+        lm = re.match(r"(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)\[\[(?P<t>[^\[\]|#]+?)(?:#[^\[\]|]*)?(?:\|[^\[\]]*)?\]\]", rest)
+        if lm:
+            target = wt.normalize_title(lm.group("t"))
+            if not wt.is_content_link(target) or _looks_like_year(target):
+                return None, 0
+            end = start + lm.end()
+            if not re.search(r"[א-ת]", clean[end:]):
+                return None, 0
+            return (target, self._has_article(target), _gender_from_honorific(lm.group("hon") or ""), wt.display_name(target)), end
+        hm = re.match(r"(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)(?P<n>[^\[\],:;()–\-]+?)(?=\s+[–\-]\s+|,|\(|:|;|\.\s|\s+(?:אשת|נישאה|נשואה|בעלה|חתן|כלת)(?![א-ת])|$)", rest)
+        if not hm:
+            return None, 0
+        hon = (hm.group("hon") or "").strip()
+        name = self.unlinked_name(hm.group("n"), _gender_from_honorific(hon) or "")
+        if not name or _looks_like_year(name) or (not hon and " " not in name and not self.plain_name_ok(name)):
+            return None, 0
+        end = start + hm.end()
+        if not re.search(r"[א-ת]", clean[end:]):
+            return None, 0
+        resolved = self.resolve_alias((hon + " " + name).strip(), False) or self.resolve_alias(name, False)
+        if resolved:
+            return (resolved, True, _gender_from_honorific(hon), wt.display_name(resolved)), end
+        return ("~" + name, False, _gender_from_honorific(hon), name), end
 
     _SPOUSE_LINK_RE = re.compile(r"(?<![א-ת])(?:אשת|אשתו של|רעיית|אלמנת|נישאה ל|נשואה ל|בעלה|בעלה של|נשוי ל|התחתן עם|התחתנה עם)\s*"
                                  r"(?:(?:" + _HON_ALT + r")\s+)*" + _idx(LINK_TPL, 9))
@@ -538,6 +575,15 @@ class Extractor:
                 return
         if self.strict_persons:
             links = [l for l in links if l[0] in self.known or honorific_before(line[max(0, l[2][0] - 30):l[2][0]])]
+        if links:
+            # "* הרב שניאור זלמן הרטמן - קרית מלאכי. חתן ר' [[יצחק בלוי]]": הראש הוא שם בלי קישור, והקישור בהמשך
+            pre = wt.plain(line[:links[0][2][0]]).lstrip("*# ").strip()
+            head0 = re.split(r"\s+[–\-]\s+|,|\(|:|\.\s", pre, maxsplit=1)[0]
+            role_head = re.match(r"(?:" + "|".join(re.escape(w) for w in LIST_ROLES) + r")\s*,?\s*", head0)
+            bare = head0[role_head.end():] if role_head else head0
+            if bare and bare != pre and re.search(r"\s+[–\-]\s+|,|\.\s", pre) and self.unlinked_name(bare, _gender_from_honorific(bare) or "") \
+                    and (_gender_from_honorific(bare) or " " in self.unlinked_name(bare, "")):
+                links = []
         text = line
         if links:
             target, display, span = links[0]
@@ -826,6 +872,17 @@ def _looks_like_year(s: str) -> bool:
 
 
 # --------------------------------------------------------------------------- דפוסים
+def _retarget(rel: "Relation", page: str, head: tuple) -> None:
+    """קשר שנוצר עם הדף כנושא, בתוך פריט רשימה שעוסק באדם אחר – מועבר לאותו אדם."""
+    pid, has, gender, disp = head
+    if rel.person == page and rel.relative != pid:
+        rel.person, rel.person_has_article, rel.person_name = pid, has, disp
+        rel.person_gender = rel.person_gender or gender
+    elif rel.relative == page and rel.person != pid:
+        rel.relative, rel.relative_has_article, rel.relative_name = pid, has, disp
+        rel.relative_gender = rel.relative_gender or gender
+
+
 def _mk(person, relative, relation, m, self_, page, *, conf=0.75, person_gender=None, relative_gender=None, side=None):
     p_id, p_has, p_g, p_name = person
     r_id, r_has, r_g, r_name = relative
@@ -1131,6 +1188,18 @@ def h_child_in_law_is(self_, m, page, sentence):
     return [r] if r else []
 
 
+def h_son_in_law_of(self_, m, page, sentence):
+    """חתן ר' X / חתנו של X → הנושא (ראש הפריט או הדף) הוא חתן של X → X חם של הנושא."""
+    w = m.group("w")
+    g = "f" if w.startswith("כל") else "m"
+    subj = self_.subject_of(m, page, word_gender=g)
+    rel = self_.person_from_match(m, 1)
+    if not rel:
+        return []
+    r = _mk(subj, rel, "parent_in_law", m, self_, page, conf=0.75, person_gender=g)
+    return [r] if r else []
+
+
 def h_sibling_in_law(self_, m, page, sentence):
     subj = self_.subject_of(m, page)
     rel = self_.person_from_match(m, 1)
@@ -1181,6 +1250,7 @@ LIST_ROLES = {
     "גיסו": ("sibling_in_law", "rel"), "גיסתו": ("sibling_in_law", "rel"),
     "דודו": ("uncle", "rel"), "דודתו": ("uncle", "rel"),
 }
+_LIST_HEAD_ROLE_RE = re.compile(r"^\s*[*#:;]+\s*(?:(?:" + "|".join(re.escape(w) for w in sorted(LIST_ROLES, key=len, reverse=True)) + r")\s*,?\s*)?")
 
 
 def build_patterns() -> list[tuple[str, re.Pattern, object]]:
@@ -1246,10 +1316,13 @@ def build_patterns() -> list[tuple[str, re.Pattern, object]]:
     # X, חתנו של Y
     add("child_in_law_of", r"(?<![א-ת])(?P<w>חתנו|כלתו|חתנם|כלתם)\s+של\s+" + REF(1), h_child_in_law_of)
     # חותנו, X
-    add("parent_in_law_is", r"(?:^|[,.;:()]\s*|\s+ו?)(?P<w>חותנו|חמיו|חמותו|חותנתו|חותנה|חמיה|חמותה|חותנתה)" + VERB + r"\s*,?\s*" + NOTOF + REF(1),
+    add("parent_in_law_is", r"(?:^|[*#,.;:()]\s*|\s+ו?)(?P<w>חותנו|חמיו|חמותו|חותנתו|חותנה|חמיה|חמותה|חותנתה)" + VERB + r"\s*,?\s*" + NOTOF + REF(1),
         h_parent_in_law_is)
     # חתנו, [[X]]
-    add("child_in_law_is", r"(?:^|[,.;:()]\s*|\s+ו?)(?P<w>חתנו|כלתו|חתנם|כלתם)" + VERB + r"\s*,?\s*" + NOTOF + LINK(1), h_child_in_law_is)
+    add("child_in_law_is", r"(?:^|[*#,.;:()]\s*|\s+ו?)(?P<w>חתנו|כלתו|חתנם|כלתם)" + VERB + r"\s*,?\s*" + NOTOF + REF(1), h_child_in_law_is)
+    # חתן ר' X / חתנו של X / כלת X – הנושא חתן/כלה של X
+    add("son_in_law_of", r"(?<![א-ת])(?P<w>חתן|כלת)\s+(?:של\s+)?" + REF(1), h_son_in_law_of)
+    add("son_in_law_of:poss", r"(?<![א-ת])(?P<w>חתנו|כלתו|חתנה|כלתה)\s+של\s+" + REF(1), h_son_in_law_of)
     # גיסו של
     add("sibling_in_law_of", r"(?<![א-ת])(?P<w>גיסו|גיסתו|גיסה|גיסם)\s+של\s+" + REF(1), h_sibling_in_law)
     # דודו של / אחיינו של / דודו, X

@@ -82,7 +82,9 @@ def build_graph(pages: dict[str, dict], relations: list[dict], config: dict) -> 
             pid = rel[side]
             if pid.startswith("~"):
                 key = (rel["source_page"], rel.get("evidence", ""), pid)
-                if side == "person" and key in same_sentence:
+                # הנושא – תמיד; מושא ("התחתן עם מתיה לרר, בתו של...") – רק כשהשם מופיע במשפט פעם אחת
+                shareable = side == "person" or rel.get("evidence", "").count(pid[1:]) == 1
+                if shareable and key in same_sentence:
                     rel[side] = same_sentence[key]
                     continue
                 if rel["relation"] == "parent":
@@ -90,7 +92,7 @@ def build_graph(pages: dict[str, dict], relations: list[dict], config: dict) -> 
                 else:
                     role = rel["relation"]
                 rel[side] = f"{pid}@{anchor}:{role}"
-                if side == "person":
+                if shareable:
                     same_sentence.setdefault(key, rel[side])
         resolved.append(rel)
 
@@ -205,6 +207,9 @@ def _names_match(a: str, b: str) -> bool:
         return True
     wa, wb = a.split(), b.split()
     if wa[:len(wb)] == wb or wb[:len(wa)] == wa:
+        return True
+    # "אריה הרטמן" / "אריה אברהם הרטמן": אותו שם פרטי ראשון ואותו שם משפחה, שם אמצעי חסר באחד
+    if len(wa) >= 2 and len(wb) >= 2 and wa[0] == wb[0] and wa[-1] == wb[-1] and (set(wa) <= set(wb) or set(wb) <= set(wa)):
         return True
     return difflib.SequenceMatcher(None, a, b).ratio() >= 0.85
 
@@ -439,6 +444,42 @@ def _infer(persons: dict, edges: dict, min_conf: float) -> None:
                 has_same = any(persons[q["b"]]["gender"] == pg and pg for q in parents_of(edges, y))
                 if not has_same:
                     add_inferred(y, parent, "parent", f"הוסק: {persons[y]['name']} אח/ות של {persons[x]['name']} שהוא/היא ילד/ה של {persons[parent]['name']}")
+    # חתן/כלה ↔ בת/בן: X (בנו של A) חתנו של B, ו-Y (בתו של B) כלתו של A – X ו-Y נשואים. וגם: לבתו של B אין
+    # בן זוג ידוע ושם המשפחה שלה הוא שם המשפחה של X (שם נישואין: "בתו, רחל הרטמן").
+    in_laws: dict[str, set[str]] = defaultdict(set)
+    kids: dict[str, list[str]] = defaultdict(list)
+    pars: dict[str, set[str]] = defaultdict(set)
+    for (a, b, rel), e in list(edges.items()):
+        if e["confidence"] < min_conf:
+            continue
+        if rel == "parent_in_law":
+            in_laws[a].add(b)
+        elif rel == "parent":
+            kids[b].append(a); pars[a].add(b)
+
+    def has_spouse(pid: str) -> bool:
+        return any(edges[edge_key(pid, s, "spouse")]["confidence"] >= min_conf for s in spouses_of(edges, pid))
+
+    def surname(pid: str) -> str:
+        p = persons[pid]
+        return (p.get("surname") or "") if not pid.startswith("~") else _surname_from_name(p["name"])
+
+    for x, bs in list(in_laws.items()):
+        if has_spouse(x):
+            continue
+        gx = persons[x]["gender"]
+        for b in bs:
+            cands = []
+            for y in kids.get(b, []):
+                if y == x or has_spouse(y) or (gx and persons[y]["gender"] == gx):
+                    continue
+                mutual = bool(pars.get(x)) and any(a in in_laws.get(y, ()) for a in pars[x])
+                married_name = persons[y]["gender"] == "f" and surname(x) and surname(x) == surname(y) and y.startswith("~")
+                if mutual or married_name:
+                    cands.append((y, 0.6 if mutual else 0.55))
+            if len(cands) == 1:
+                y, conf = cands[0]
+                add_inferred(x, y, "spouse", f"הוסק: {persons[x]['name']} חתן/כלה של {persons[b]['name']}, ו{persons[y]['name']} בת/בן שלו", conf=conf)
     # חם/חמות → הורה של בן/בת הזוג
     for key, e in list(edges.items()):
         if e["relation"] != "parent_in_law" or e["confidence"] < min_conf:

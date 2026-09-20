@@ -651,6 +651,57 @@ class TestRealTextRules(unittest.TestCase):
         self.assertIn(("parent", "יוסף הרטמן"), rels_of)
         self.assertTrue(any(r == "spouse" and o.startswith("~שרה") for r, o in rels_of), rels_of)
 
+    def _hartman_extractor(self):
+        known = {f"פלוני {i}" for i in range(1000)} | {"יוסף הרטמן", "יצחק בלוי", "יעקב הרשקופ", "אריה לוין", "שניאור זלמן ליפסקר", "רחל שניאורסון"}
+        return Extractor(CFG, known_persons=known, common_words={"ביתר", "עילית", "קרית", "מלאכי", "קריית"})
+
+    def test_list_item_tail_refers_to_the_item_head(self):
+        ex = self._hartman_extractor()
+        out, _ = ex.extract("יעקב הרשקופ", "==משפחתו==\n*חתנו, ר' אריה הרטמן - ביתר עילית, בנו של [[יוסף הרטמן]].\n")
+        triples = {(r.relation, r.person, r.relative) for r in out}
+        self.assertIn(("parent_in_law", "~אריה הרטמן", "יעקב הרשקופ"), triples, triples)
+        self.assertIn(("parent", "~אריה הרטמן", "יוסף הרטמן"), triples, triples)
+        self.assertNotIn(("parent", "יעקב הרשקופ", "יוסף הרטמן"), triples)
+        out, _ = ex.extract("יצחק בלוי", "==משפחתו==\n*בתו, רחל הרטמן - קריית מלאכי, חמיה הרב [[יוסף הרטמן]].\n")
+        triples = {(r.relation, r.person, r.relative) for r in out}
+        self.assertIn(("parent", "~רחל הרטמן", "יצחק בלוי"), triples, triples)
+        self.assertIn(("parent_in_law", "~רחל הרטמן", "יוסף הרטמן"), triples, triples)
+        self.assertNotIn(("parent_in_law", "יצחק בלוי", "יוסף הרטמן"), triples)
+        out, _ = ex.extract("יוסף הרטמן", "==משפחתו==\nילדיו:\n*הרב שניאור זלמן הרטמן - קרית מלאכי. חתן ר' [[יצחק בלוי]].\n")
+        triples = {(r.relation, r.person, r.relative) for r in out}
+        self.assertIn(("parent", "~שניאור זלמן הרטמן", "יוסף הרטמן"), triples, triples)
+        self.assertIn(("parent_in_law", "~שניאור זלמן הרטמן", "יצחק בלוי"), triples, triples)
+        self.assertNotIn(("parent", "יצחק בלוי", "יוסף הרטמן"), triples)
+
+    def test_in_laws_from_both_sides_become_a_couple(self):
+        from collections import Counter
+        from chabadtrees.graph import _infer
+        def person(k, g): return {"name": k.lstrip("~"), "gender": g, "born": None, "died": None, "flags": [], "gender_votes": Counter(), "mentioned_in": set(), "surname": ""}
+        persons = {"יוסף הרטמן": person("יוסף הרטמן", "m"), "יצחק בלוי": person("יצחק בלוי", "m"),
+                   "~שניאור זלמן הרטמן": person("~שניאור זלמן הרטמן", "m"), "~רחל הרטמן": person("~רחל הרטמן", "f")}
+        def edge(a, b, rel, c): return {"a": a, "b": b, "relation": rel, "confidence": c, "flags": [], "evidence": []}
+        edges = {("~שניאור זלמן הרטמן", "יוסף הרטמן", "parent"): edge("~שניאור זלמן הרטמן", "יוסף הרטמן", "parent", 0.6),
+                 ("~רחל הרטמן", "יצחק בלוי", "parent"): edge("~רחל הרטמן", "יצחק בלוי", "parent", 0.55),
+                 ("~שניאור זלמן הרטמן", "יצחק בלוי", "parent_in_law"): edge("~שניאור זלמן הרטמן", "יצחק בלוי", "parent_in_law", 0.75)}
+        _infer(persons, edges, 0.5)
+        self.assertTrue(any(e["relation"] == "spouse" and {e["a"], e["b"]} == {"~שניאור זלמן הרטמן", "~רחל הרטמן"} for e in edges.values()), list(edges))
+        self.assertFalse([p for p in persons if ":inlaw:" in p])          # אין צורך בבת בלי שם – הבת ידועה
+
+    def test_object_name_shares_the_sentence_id(self):
+        from dataclasses import asdict
+        from chabadtrees.extract import Relation
+        from chabadtrees.graph import build_graph
+        pages = {t: {"title": t, "gender_votes": {"m": 3, "f": 0}, "born": None, "died": None, "categories": [], "surname": t.split()[-1]}
+                 for t in ("יוסף הרטמן", "אפרים לרר")}
+        line = 'התחתן עם מתיה לרר, בתו של הרב [[אפרים לרר]].'
+        rels = [asdict(Relation("יוסף הרטמן", "~מתיה לרר", "spouse", "יוסף הרטמן", line, pattern="spouse_verb", confidence=0.7,
+                                relative_gender="f", relative_has_article=False, relative_name="מתיה לרר")),
+                asdict(Relation("~מתיה לרר", "אפרים לרר", "parent", "יוסף הרטמן", line, pattern="child_of", confidence=0.6,
+                                person_gender="f", person_has_article=False, person_name="מתיה לרר"))]
+        graph = build_graph(pages, rels, CFG)
+        wives = [p for p in graph["persons"] if p.startswith("~מתיה")]
+        self.assertEqual(len(wives), 1, wives)
+
     def test_grandparent_recorded_as_parent_is_demoted(self):
         from chabadtrees.graph import _consistency
         persons = {k: {"name": k, "gender": g, "born": None, "died": None, "flags": []} for k, g in
