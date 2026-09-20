@@ -71,33 +71,77 @@ def sanitize_ref(ref: str) -> str:
     return "{{!}}".join(parts) if len(parts) > 1 else ref
 
 
+_PARENTS_CACHE: dict[int, tuple[int, dict]] = {}
+
+
+def _article_parent(graph: dict, pid: str) -> str | None:
+    """הורה עם ערך של אדם בלי ערך (האב קודם) – כדי לכתוב "אשתו: בת [[האב]]" בלי לנקוב בשמה."""
+    key = id(graph)
+    cached = _PARENTS_CACHE.get(key)
+    if cached is None or cached[0] != len(graph["edges"]):
+        pm: dict[str, list[str]] = {}
+        for e in graph["edges"]:
+            if e["relation"] == "parent" and e["confidence"] >= 0.5:
+                pm.setdefault(e["a"], []).append(e["b"])
+        _PARENTS_CACHE.clear()
+        _PARENTS_CACHE[key] = (len(graph["edges"]), pm)
+        cached = _PARENTS_CACHE[key]
+    pars = [p for p in cached[1].get(pid, []) if graph["persons"].get(p, {}).get("fetched")]
+    pars.sort(key=lambda p: 0 if graph["persons"][p].get("gender") == "m" else 1)
+    return pars[0] if pars else None
+
+
+def tree_link(chart: Chart, existing: dict | None, pid: str) -> str:
+    """"(עץ משפחת X)" – קישור לעץ אחר (קיים באתר או שנבנה כאן) שבו האדם מופיע."""
+    if not existing:
+        return ""
+    trees = existing.get("person_to_trees", {}).get(pid) or []
+    trees = [t for t in trees if t.startswith("תבנית:") and t != getattr(chart, "self_tree", None)]
+    if not trees:
+        return ""
+    t = trees[0]
+    return f"([[{t}|{t.split(':', 1)[1]}]])"
+
+
 def spouse_inline(node, pid: str, chart: Chart, graph: dict, cfg: dict, existing: dict | None) -> str:
-    """בני הזוג של בן משפחה בתוך הקופסה: "אשת [[בעלה]]" לבת, "אשתו: [[אשתו]]" לבן. רק לבני זוג שאין להם קופסה."""
+    """בני הזוג של בן משפחה בתוך הקופסה: "אשת [[בעלה]]" לבת, "אשתו: [[אשתו]]" לבן. רק לבני זוג שאין להם קופסה.
+    בן זוג בלי ערך לא נזכר בשמו; אם להורהו יש ערך – "אשתו: בת [[ההורה]]" וקישור לעץ של משפחתו."""
     ccfg = cfg["chart"]
     boxed = {b["person"] for b in chart.boxes.values() if b.get("node") is node and b["role"] == "spouse"}
     spouses = [m.spouse for m in node.marriages if m.spouse and m.spouse not in boxed]
-    if getattr(chart, "hide_unlinked", False):
-        spouses = [sp for sp in spouses if not sp.startswith("~")]
+    spouses += [sp for sp in getattr(node, "hidden_spouses", []) if sp not in spouses]
     if not spouses:
         return ""
-    person = graph["persons"][pid]
+    persons = graph["persons"]
+    hide = getattr(chart, "hide_unlinked", False)
+    person = persons[pid]
     parts = []
     for sp in spouses:
-        sperson = graph["persons"].get(sp, {"name": sp, "title": None})
-        label = person_label(sperson, cfg, years=False)
-        # מגדר לפי שני הצדדים: בת (או בן זוג גבר) → "אשת X"; בן (או בת זוג אישה) → "אשתו: X"
+        sperson = persons.get(sp, {"name": sp, "title": None})
         pg, sg = person.get("gender"), sperson.get("gender")
+        link_pid = sp
+        if hide and not sperson.get("fetched"):
+            par = _article_parent(graph, sp)
+            if not par:
+                continue
+            word = {"f": "בת", "m": "בן"}.get(sg or {"m": "f", "f": "m"}.get(pg))
+            if not word:
+                continue
+            label = f"{word} {person_label(persons[par], cfg, years=False)}"
+            link_pid = par
+        else:
+            label = person_label(sperson, cfg, years=False)
+        # מגדר לפי שני הצדדים: בת (או בן זוג גבר) → "אשת X"; בן (או בת זוג אישה) → "אשתו: X"
         if pg == "f" or (pg is None and sg == "m"):
             parts.append(f"{ccfg.get('wife_of', 'אשת')} {label}")
         elif cfg["chart"].get("show_sons_wives", True):
             parts.append(f"{ccfg.get('husband_label', 'אשתו:')} {label}")
-        # קישור לעץ של משפחת בן הזוג, אם קיים באתר
-        if existing:
-            trees = existing.get("person_to_trees", {}).get(sp) or []
-            trees = [t for t in trees if t.startswith("תבנית:") and t != getattr(chart, "self_tree", None)]
-            if trees:
-                t = trees[0]
-                parts.append(f"([[{t}|{t.split(':', 1)[1]}]])")
+        else:
+            continue
+        # קישור לעץ של משפחת בן הזוג (קיים באתר, או נבנה כאן) – צמוד לשם: "אשת [[X]] (עץ משפחת X)"
+        link = tree_link(chart, existing, link_pid)
+        if link:
+            parts[-1] += " " + link
     return "<br /><small>" + "; ".join(parts) + "</small>" if parts else ""
 
 
@@ -129,6 +173,10 @@ def box_content(chart: Chart, bid: str, graph: dict, cfg: dict, with_refs: bool 
             ref_texts = refs
     if ref_texts:
         label += "".join(sanitize_ref(r) for r in ref_texts[:2])
+    if info["role"] == "spouse":
+        link = tree_link(chart, existing, pid)
+        if link:
+            label += f"<br /><small>{link}</small>"
     if node is not None and info["role"] == "member" and getattr(node, "extra_children", None):
         names = []
         for c in node.extra_children:

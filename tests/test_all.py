@@ -277,7 +277,7 @@ class TestPipelineWithMock(MockServerMixin, unittest.TestCase):
         self.assertTrue(trees)
         for t in trees:
             shown = set(t["members_shown"]) | set(t["spouses_shown"])
-            unl = {p for p in shown if p.startswith("~")}
+            unl = {p for p in shown if p.startswith("~") or not self.graph["persons"].get(p, {}).get("fetched")}
             anon = {b["person"] for b in t["chart"].boxes.values() if b["person"] in getattr(t["chart"], "anonymous", ())}
             self.assertTrue(unl <= anon, f"אנשים בלי ערך בעץ {t['title']}: {unl - anon}")
             for p in unl:
@@ -480,6 +480,59 @@ class TestRealTextRules(unittest.TestCase):
         self.assertIn("~חנה@יוסף:child", anonymous)        # בת בלי ערך שנשואה למי שיש לו ערך – נשארת בלי שם
         self.assertNotIn("~לאה@יוסף:child", keep)          # בת בלי ערך שבעלה בלי ערך – יוצאת
         self.assertNotIn("~דוד", keep)
+
+    def test_same_name_in_one_sentence_is_one_person(self):
+        from dataclasses import asdict
+        from chabadtrees.extract import Relation
+        from chabadtrees.graph import build_graph
+        line = "*בתו מרת אסתר, רעיית הרב יצחק יעקב רוזנשיין - משלוחי הרבי"
+        pages = {t: {"title": t, "gender_votes": {"m": 3, "f": 0}, "born": None, "died": None, "categories": [], "surname": t.split()[-1]}
+                 for t in ("יהושע יוזביץ", "יצחק יעקב רוזנשיין")}
+        rels = [asdict(Relation("~אסתר", "יהושע יוזביץ", "parent", "יהושע יוזביץ", line, pattern="child_unlinked", confidence=0.55,
+                                person_gender="f", person_has_article=False, person_name="אסתר")),
+                asdict(Relation("~אסתר", "יצחק יעקב רוזנשיין", "spouse", "יהושע יוזביץ", line, pattern="spouse_construct", confidence=0.65,
+                                person_gender="f", person_has_article=False, person_name="אסתר"))]
+        graph = build_graph(pages, rels, CFG)
+        esther = [p for p in graph["persons"] if p.startswith("~אסתר")]
+        self.assertEqual(len(esther), 1, esther)
+        rels_of = {(e["relation"], e["b"] if e["a"] == esther[0] else e["a"]) for e in graph["edges"] if esther[0] in (e["a"], e["b"])}
+        self.assertIn(("parent", "יהושע יוזביץ"), rels_of)
+        self.assertIn(("spouse", "יצחק יעקב רוזנשיין"), rels_of)
+
+    def test_hidden_wife_points_to_her_fathers_tree(self):
+        from chabadtrees.layout import TreeBuilder
+        from chabadtrees.pipeline import _tree_record
+        def person(k, g, fetched=True):
+            return {"id": k, "title": k if fetched else None, "name": k.lstrip("~").split("@")[0], "gender": g, "born": None, "died": None,
+                    "fetched": fetched, "linked": fetched, "surname": "", "flags": [], "categories": [], "family_categories": []}
+        graph = {"persons": {"יוסף יצחק יוזביץ'": person("יוסף יצחק יוזביץ'", "m"), "יוסף הרטמן": person("יוסף הרטמן", "m"),
+                             "~רבקה@יוסף הרטמן:child": person("~רבקה@יוסף הרטמן:child", "f", fetched=False)},
+                 "edges": [{"a": "~רבקה@יוסף הרטמן:child", "b": "יוסף הרטמן", "relation": "parent", "confidence": 0.82, "flags": [], "evidence": []},
+                           {"a": "~רבקה@יוסף הרטמן:child", "b": "יוסף יצחק יוזביץ'", "relation": "spouse", "confidence": 0.7, "flags": [], "evidence": []}]}
+        cfg = dict(CFG); cfg["include_unlinked"] = False
+        tb = TreeBuilder(graph, cfg); tb.hide_unlinked = True
+        tree = tb.build("יוסף יצחק יוזביץ'", {"יוסף יצחק יוזביץ'"}, None, 10)
+        spec = {"kind": "category", "label": "משפחת יוזביץ'", "family_categories": ["משפחת יוזביץ'"], "members": set()}
+        existing = {"person_to_trees": {"יוסף הרטמן": ["תבנית:עץ משפחת הרטמן"]}}
+        rec = _tree_record(graph, cfg, "עץ משפחת יוזביץ'", [tree], spec, existing, anonymous=set(), hide_unlinked=True)
+        self.assertIn("אשתו: בת [[יוסף הרטמן]]", rec["wikitext"])
+        self.assertIn("[[תבנית:עץ משפחת הרטמן|עץ משפחת הרטמן]]", rec["wikitext"])
+        self.assertNotIn("רבקה", rec["wikitext"])
+
+    def test_red_link_is_treated_as_no_article(self):
+        from chabadtrees.layout import TreeBuilder
+        from chabadtrees.pipeline import _drop_unlinked
+        def person(k, g, fetched):
+            return {"name": k, "gender": g, "born": None, "died": None, "fetched": fetched, "flags": []}
+        graph = {"persons": {"א": person("א", "m", True), "ב": person("ב", "f", False), "ג": person("ג", "m", False)},
+                 "edges": [{"a": "א", "b": "ב", "relation": "spouse", "confidence": 0.9, "flags": [], "evidence": []},
+                           {"a": "ג", "b": "א", "relation": "parent", "confidence": 0.9, "flags": [], "evidence": []}]}
+        cfg = dict(CFG); cfg["include_unlinked"] = False
+        tb = TreeBuilder(graph, cfg); tb.hide_unlinked = True
+        tree = tb.build("א", None, None, 10)
+        self.assertEqual([m.spouse for m in tree.marriages if m.spouse], [])       # אשתו קישור אדום – לא מוצגת
+        keep, anonymous = _drop_unlinked({"א", "ב", "ג"}, tb)
+        self.assertEqual(keep, {"א"})                                              # בן בקישור אדום בלי צאצאים עם ערך – יוצא
 
     def test_grandparent_recorded_as_parent_is_demoted(self):
         from chabadtrees.graph import _consistency

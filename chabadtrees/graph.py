@@ -67,7 +67,10 @@ def build_graph(pages: dict[str, dict], relations: list[dict], config: dict) -> 
 
     # --- אנשים לא-מקושרים: מזהה = ~שם@עוגן:תפקיד (העוגן: הצד המקושר בקשר; התפקיד מבדיל "אשתו חיה שרה" מ"בתו חיה שרה") ---
     resolved: list[dict] = []
-    for rel in relations:
+    # "בתו אסתר, רעיית הרב X": הנושא של שני הקשרים באותו משפט הוא אותו אדם – מזהה אחד (ולא "בת של" ו"אשת" נפרדים).
+    # קשרי הורה קודם, כדי שהעוגן יהיה ההורה.
+    same_sentence: dict[tuple, str] = {}
+    for rel in sorted(relations, key=lambda r: 0 if r["relation"] == "parent" else 1):
         rel = dict(rel)
         if not rel["relative"].startswith("~"):
             anchor = rel["relative"]
@@ -78,11 +81,17 @@ def build_graph(pages: dict[str, dict], relations: list[dict], config: dict) -> 
         for side in ("person", "relative"):
             pid = rel[side]
             if pid.startswith("~"):
+                key = (rel["source_page"], rel.get("evidence", ""), pid)
+                if side == "person" and key in same_sentence:
+                    rel[side] = same_sentence[key]
+                    continue
                 if rel["relation"] == "parent":
                     role = "child" if side == "person" else "parent"
                 else:
                     role = rel["relation"]
                 rel[side] = f"{pid}@{anchor}:{role}"
+                if side == "person":
+                    same_sentence.setdefault(key, rel[side])
         resolved.append(rel)
 
     edges: dict[tuple, dict] = {}

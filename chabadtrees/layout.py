@@ -27,6 +27,7 @@ class TreeNode:
     truncated: bool = False               # יש צאצאים נוספים שלא הוצגו (מגבלת גודל)
     note: str = ""
     extra_children: list[str] = field(default_factory=list)   # ילדים בלי ערך, בשם פרטי בלבד – טקסט בקופסה
+    hidden_spouses: list[str] = field(default_factory=list)   # בני זוג בלי ערך (פרטיות): בלי קופסה ובלי שם; "בת [[אביה]]" אם אפשר
 
     def all_nodes(self):
         yield self
@@ -111,6 +112,13 @@ class TreeBuilder:
             return sorted(pars, key=rank)[0]
         return owner_of
 
+    def has_article(self, pid: str) -> bool:
+        return bool(self.persons.get(pid, {}).get("fetched"))
+
+    def hidden(self, pid: str) -> bool:
+        """פרטיות: מי שאין לו ערך – גם קישור אדום – לא מוצג בשמו."""
+        return bool(getattr(self, "hide_unlinked", False)) and not self.has_article(pid)
+
     def is_bare(self, pid: str) -> bool:
         """ילד בלי ערך, בשם פרטי בלבד, בלי בן זוג ובלי ילדים – מוצג כטקסט בקופסת ההורה, לא כקופסה."""
         if not pid.startswith("~"):
@@ -138,8 +146,8 @@ class TreeBuilder:
         def make_node(pid: str, depth: int) -> TreeNode:
             node = TreeNode(person=pid, depth=depth)
             spouses = list(dict.fromkeys(self._spouses.get(pid, [])))
-            if getattr(self, "hide_unlinked", False):
-                spouses = [s for s in spouses if not s.startswith("~")]
+            node.hidden_spouses = [s for s in spouses if self.hidden(s)]
+            spouses = [s for s in spouses if not self.hidden(s)]
             kids = [c for c in dict.fromkeys(self._children.get(pid, [])) if members is None or c in members]
             kids = [c for c in kids if c not in visited and owner_of(c) == pid]
             kids = sorted(kids, key=self.sort_key)
@@ -148,8 +156,8 @@ class TreeBuilder:
             for c in kids:
                 others = [p for p in self._parents.get(c, []) if p != pid]
                 other = next((o for o in others if o in spouses), None)
-                if other is None and others and getattr(self, "hide_unlinked", False):
-                    others = [o for o in others if not o.startswith("~")]
+                if other is None and others:
+                    others = [o for o in others if not self.hidden(o)]
                 if other is None and others:
                     pg = self.persons.get(pid, {}).get("gender")
                     cands = [o for o in others if self.persons.get(o, {}).get("gender") in (None, ("f" if pg == "m" else "m" if pg == "f" else None))

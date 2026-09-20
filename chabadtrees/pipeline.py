@@ -444,6 +444,11 @@ def married_in(graph: dict, members: set[str], surnames: set[str], tb: TreeBuild
     return out
 
 
+def _no_article(graph: dict, pid: str) -> bool:
+    """בלי ערך: אזכור לא-מקושר ("~") או קישור אדום (ערך שלא קיים)."""
+    return pid.startswith("~") or not graph["persons"].get(pid, {}).get("fetched")
+
+
 def _with_unlinked_relatives(graph: dict, members: set[str], exclude_parents_of: set[str] = frozenset()) -> set[str]:
     out = set(members)
     for e in graph["edges"]:
@@ -452,9 +457,9 @@ def _with_unlinked_relatives(graph: dict, members: set[str], exclude_parents_of:
         a, b = e["a"], e["b"]
         if e["relation"] == "parent" and a in exclude_parents_of:
             continue
-        if a in members and b.startswith("~"):
+        if a in members and _no_article(graph, b):
             out.add(b)
-        if b in members and a.startswith("~"):
+        if b in members and _no_article(graph, a):
             out.add(a)
     return out
 
@@ -512,6 +517,7 @@ def build_trees(graph: dict, cfg: dict, only_label: str | None = None, root: str
     tb = TreeBuilder(graph, cfg)
     max_nodes = max_nodes or cfg.get("max_tree_nodes", 70)
     out = []
+    specs_of: list[dict] = []
     if root:
         if root not in graph["persons"]:
             raise SystemExit(f"האדם '{root}' לא נמצא בגרף")
@@ -532,8 +538,8 @@ def build_trees(graph: dict, cfg: dict, only_label: str | None = None, root: str
         # "נכנס בנישואין" נבדק גם מול בני זוג בלי ערך (בת המשפחה שאין לה ערך) – אחרת חתן נחשב שורש
         mi = married_in(graph, core, surnames, tb)
         tb.married_in = mi
-        members = _with_unlinked_relatives(graph, core & spec["members"] | {m for m in core if m.startswith("~")}, exclude_parents_of=mi)
-        members &= core | {m for m in members if m.startswith("~")}
+        members = _with_unlinked_relatives(graph, core & spec["members"] | {m for m in core if _no_article(graph, m)}, exclude_parents_of=mi)
+        members &= core | {m for m in members if _no_article(graph, m)}
         # הורים ואחים של מי שהתחתן לתוך המשפחה אינם חלק מהעץ (גם כשהם בקטגוריה), אלא אם הם מהשושלת עצמה
         def in_bloodline(x: str) -> bool:
             sn = graph["persons"].get(x, {}).get("surname") or ""
@@ -573,7 +579,29 @@ def build_trees(graph: dict, cfg: dict, only_label: str | None = None, root: str
             if parent_title:
                 rec["kind"], rec["parent_tree"] = "branch", parent_title
             out.append(rec)
+            specs_of.append(spec)
+    _cross_link(graph, cfg, out, specs_of, existing)
     return out
+
+
+def _cross_link(graph: dict, cfg: dict, records: list[dict], specs_of: list[dict], existing: dict | None) -> None:
+    """קישור בין העצים: בן זוג (או אבי בת זוג בלי ערך) שמופיע בעץ אחר שנבנה כאן מקבל "(עץ משפחת X)" עם קישור,
+    כמו הקישור לעצים שכבר קיימים באתר. העצים נבנים קודם, ואז כולם מצוירים שוב עם המפה המלאה."""
+    if not records:
+        return
+    person_to_trees: dict[str, list[str]] = {pid: list(ts) for pid, ts in (existing or {}).get("person_to_trees", {}).items()}
+    for rec in records:
+        for pid in rec["members_shown"]:
+            if _no_article(graph, pid):
+                continue
+            ts = person_to_trees.setdefault(pid, [])
+            t = "תבנית:" + rec["title"]
+            if t not in ts:
+                ts.append(t)
+    ex2 = dict(existing or {})
+    ex2["person_to_trees"] = person_to_trees
+    for rec, spec in zip(records, specs_of):
+        rec["wikitext"] = tree_page(rec["title"], rec["chart"], graph, cfg, spec, rec["notes"], existing=ex2)
 
 
 # מילה שנייה בשם פרטי כפול ("מנחם מענדל", "שניאור זלמן", "חיה מושקא") – שם של שתי מילים כזה עדיין אינו מזהה
@@ -589,7 +617,7 @@ def _drop_unlinked(members: set[str], tb: TreeBuilder) -> tuple[set[str], set[st
     """פרטיות: מי שאין לו ערך יוצא מהעץ. נשאר (בלי שם) רק מי שבלעדיו העץ מתפרק: אדם בלי ערך שיש לו
     לפחות שני ענפי ילדים עם צאצאים בעלי ערך, שהוא החוליה היחידה בין הורה עם ערך לצאצא עם ערך,
     או בת/בן של הורה שבעץ שנשוי/אה למי שיש לו ערך (כך החתן מופיע, בלי שם הבת)."""
-    linked = {m for m in members if not m.startswith("~")}
+    linked = {m for m in members if tb.has_article(m)}
     memo: dict[str, bool] = {}
 
     def has_linked_desc(p: str, stack: frozenset = frozenset()) -> bool:
@@ -611,11 +639,11 @@ def _drop_unlinked(members: set[str], tb: TreeBuilder) -> tuple[set[str], set[st
     while changed:
         changed = False
         for p in members:
-            if p in keep or not p.startswith("~"):
+            if p in keep:
                 continue
             branches = [c for c in tb._children.get(p, []) if c in members and (c in linked or has_linked_desc(c))]
             parent_kept = any(par in keep for par in tb._parents.get(p, []))
-            linked_spouse = any(not sp.startswith("~") for sp in tb._spouses.get(p, []))
+            linked_spouse = any(tb.has_article(sp) for sp in tb._spouses.get(p, []))
             if len(branches) >= 2 or (branches and parent_kept) or (parent_kept and linked_spouse):
                 keep.add(p)
                 anonymous.add(p)
