@@ -123,6 +123,9 @@ def build_graph(pages: dict[str, dict], relations: list[dict], config: dict) -> 
         if rel.get("side") and not e.get("side"):
             e["side"] = rel["side"]
 
+    # --- אזכור שנפתר משם-תצוגה לערך הלא נכון (בן דוד או סב באותו שם) חוזר להיות אדם בלי ערך ---
+    _unresolve_conflicting_aliases(persons, edges)
+
     # --- מיזוג אנשים לא-מקושרים בעלי אותו שם שעוגניהם קרובים ---
     _merge_unlinked(persons, edges)
     _merge_unlinked_by_name(persons, edges, config.get("merge_by_name_max_surname_pages", 15))
@@ -282,6 +285,80 @@ def _merge_unlinked(persons: dict, edges: dict) -> None:
     _apply_remap(persons, edges, remap)
 
 
+def _unresolve_conflicting_aliases(persons: dict, edges: dict) -> None:
+    """"בנו של משה בלוי" נפתר לערך "משה בלוי" (סופר, נולד תשי"ב) – אבל הכוונה למשה אורי בלוי, בלי ערך. כשקשר שנפתר
+    משם-תצוגה סותר את הערך – אב מפורש אחר, או שנים שלא מסתדרות (ילד או נכד שנולד לפני ה"הורה") – כל הקשרים שנפתרו
+    לערך הזה מאותו דף עוברים לאדם בלי ערך ("~משה בלוי@דף:alias"), והמיזוג הרגיל ימצא לו את המשבצת הנכונה."""
+    def alias_only(e: dict) -> bool:
+        return bool(e["evidence"]) and all(ev.get("alias") for ev in e["evidence"])
+
+    def gender(pid: str) -> str | None:
+        v = persons[pid]["gender_votes"]
+        return "m" if v["m"] > v["f"] else "f" if v["f"] > v["m"] else None
+
+    born = {pid: _year(p.get("born")) for pid, p in persons.items()}
+    died = {pid: _year(p.get("died")) for pid, p in persons.items()}
+    solid_fathers: dict[str, set[str]] = defaultdict(set)
+    children: dict[str, list[str]] = defaultdict(list)
+    for (a, b, rel), e in edges.items():
+        if rel != "parent":
+            continue
+        children[b].append(a)
+        if not alias_only(e) and gender(b) == "m":
+            solid_fathers[a].add(b)
+    bad: set[tuple[str, str]] = set()          # (ערך, דף המקור של האזכור)
+    for (a, b, rel), e in list(edges.items()):
+        if rel != "parent" or not alias_only(e):
+            continue
+        pages = {ev["source_page"] for ev in e["evidence"]}
+        for art in (a, b):
+            if art.startswith("~") or not persons[art].get("fetched"):
+                continue
+            conflict = False
+            if art == b:          # הערך כהורה של a
+                if born[art] and born.get(a) and born[a] < born[art] + 12:
+                    conflict = True
+                if born[art] and any(born.get(c) and born[c] < born[art] + 25 for c in children.get(a, [])):
+                    conflict = True
+                if died[art] and born.get(a) and born[a] > died[art] + 1:
+                    conflict = True
+            else:                 # הערך כילד של b
+                if gender(b) == "m" and any(f != b for f in solid_fathers.get(art, ())):
+                    conflict = True
+                if born[art] and born.get(b) and born[art] < born[b] + 12:
+                    conflict = True
+            if conflict:
+                bad.update((art, pg) for pg in pages)
+    if not bad:
+        return
+    for key in list(edges):
+        a, b, rel = key
+        e = edges.get(key)
+        if e is None or not alias_only(e):
+            continue
+        pages = {ev["source_page"] for ev in e["evidence"]}
+        for art in (a, b):
+            hits = [pg for pg in pages if (art, pg) in bad]
+            if not hits:
+                continue
+            u = f"~{wt.display_name(art)}@{hits[0]}:alias"
+            if u not in persons:
+                src = persons[art]
+                persons[u] = {"id": u, "title": None, "name": wt.display_name(art), "linked": False, "fetched": False, "gender": None,
+                              "gender_votes": Counter(src["gender_votes"]), "born": None, "died": None, "surname": src.get("surname") or "",
+                              "categories": [], "family_categories": [], "flags": ["הופרד מהערך: פתרון-שם סותר"], "mentioned_in": set(pages)}
+            e2 = edges.pop(key)
+            for ev in e2["evidence"]:
+                ev["alias"] = False
+            nkey = edge_key(u if a == art else a, u if b == art else b, rel)
+            if nkey in edges:
+                edges[nkey]["evidence"].extend(e2["evidence"])
+            else:
+                e2["a"], e2["b"] = nkey[0], nkey[1]
+                edges[nkey] = e2
+            break
+
+
 def _apply_remap(persons: dict, edges: dict, remap: dict[str, str]) -> None:
     if not remap:
         return
@@ -413,13 +490,29 @@ def spouses_of(edges: dict | list, pid: str) -> list[str]:
 
 
 def _infer(persons: dict, edges: dict, min_conf: float) -> None:
+    # אינדקסים חיים (סריקה של כל הקשרים לכל אדם הייתה איטית מאוד): בני זוג והורים לפי מזהה, מעל סף הביטחון
+    spouse_map: dict[str, set[str]] = defaultdict(set)
+    parent_map: dict[str, list[dict]] = defaultdict(list)
+    for (a, b, rel), e in edges.items():
+        if e["confidence"] < min_conf:
+            continue
+        if rel == "spouse":
+            spouse_map[a].add(b); spouse_map[b].add(a)
+        elif rel == "parent":
+            parent_map[a].append(e)
+
     def add_inferred(a: str, b: str, relation: str, why: str, conf: float = 0.5):
         key = edge_key(a, b, relation)
         if key in edges or a == b:
             return
-        edges[key] = {"a": key[0], "b": key[1], "relation": relation, "confidence": conf, "inferred": True,
-                      "flags": ["inferred", "no_ref"], "side": None,
-                      "evidence": [{"source_page": "", "text": why, "refs": [], "method": "inference", "pattern": "", "confidence": conf}]}
+        e = edges[key] = {"a": key[0], "b": key[1], "relation": relation, "confidence": conf, "inferred": True,
+                          "flags": ["inferred", "no_ref"], "side": None,
+                          "evidence": [{"source_page": "", "text": why, "refs": [], "method": "inference", "pattern": "", "confidence": conf}]}
+        if conf >= min_conf:
+            if relation == "spouse":
+                spouse_map[key[0]].add(key[1]); spouse_map[key[1]].add(key[0])
+            elif relation == "parent":
+                parent_map[key[0]].append(e)
 
     # אב ואם של אותו ילד – בני זוג ("נולד לאביו X ולאמו Y")
     parents_by_child: dict[str, list[str]] = defaultdict(list)
@@ -436,12 +529,12 @@ def _infer(persons: dict, edges: dict, min_conf: float) -> None:
         if e["relation"] != "sibling" or e["confidence"] < min_conf:
             continue
         for x, y in ((e["a"], e["b"]), (e["b"], e["a"])):
-            for pe in parents_of(edges, x):
+            for pe in list(parent_map.get(x, [])):
                 if pe["confidence"] < 0.7:
                     continue
                 parent = pe["b"]
                 pg = persons[parent]["gender"]
-                has_same = any(persons[q["b"]]["gender"] == pg and pg for q in parents_of(edges, y))
+                has_same = any(persons[q["b"]]["gender"] == pg and pg for q in parent_map.get(y, []))
                 if not has_same:
                     add_inferred(y, parent, "parent", f"הוסק: {persons[y]['name']} אח/ות של {persons[x]['name']} שהוא/היא ילד/ה של {persons[parent]['name']}")
     # חתן/כלה ↔ בת/בן: X (בנו של A) חתנו של B, ו-Y (בתו של B) כלתו של A – X ו-Y נשואים. וגם: לבתו של B אין
@@ -458,7 +551,7 @@ def _infer(persons: dict, edges: dict, min_conf: float) -> None:
             kids[b].append(a); pars[a].add(b)
 
     def has_spouse(pid: str) -> bool:
-        return any(edges[edge_key(pid, s, "spouse")]["confidence"] >= min_conf for s in spouses_of(edges, pid))
+        return bool(spouse_map.get(pid))
 
     def surname(pid: str) -> str:
         p = persons[pid]
@@ -485,11 +578,10 @@ def _infer(persons: dict, edges: dict, min_conf: float) -> None:
         if e["relation"] != "parent_in_law" or e["confidence"] < min_conf:
             continue
         person, in_law = e["a"], e["b"]
-        known_spouses = [sp for sp in spouses_of(edges, person)
-                         if edges.get(edge_key(sp, person, "spouse"), {}).get("confidence", 0) >= min_conf]
+        known_spouses = sorted(spouse_map.get(person, ()))
         for sp in known_spouses:
             g = persons[in_law]["gender"]
-            if not any(persons[q["b"]]["gender"] == g and g for q in parents_of(edges, sp)):
+            if not any(persons[q["b"]]["gender"] == g and g for q in parent_map.get(sp, [])):
                 add_inferred(sp, in_law, "parent", f"הוסק: {persons[person]['name']} חתן/כלה של {persons[in_law]['name']} ונשוי/אה ל{persons[sp]['name']}")
         if not known_spouses:
             # "חתנו ישראל גולדברג" בלי שם הבת: יש בת (בלי שם ובלי ערך) שנשואה לו – חוליה בעץ בין החותן לחתן
@@ -527,6 +619,30 @@ def _consistency(persons: dict, edges: dict) -> None:
                 e["confidence"] = min(e["confidence"], 0.3)
             elif cb and pd and cb > pd + 1:
                 e["flags"].append("ההורה נפטר לפני לידת הילד")
+                e["confidence"] = min(e["confidence"], 0.3)
+    # אב שנפתר משם-תצוגה כשיש אב מפורש אחר – פתרון-השם הוא הטעות
+    for child, es in by_child.items():
+        fathers = [e for e in es if e["confidence"] >= 0.5 and persons[e["b"]]["gender"] == "m"]
+        if len(fathers) < 2:
+            continue
+        solid = [e for e in fathers if not (e["evidence"] and all(ev.get("alias") for ev in e["evidence"]))]
+        if solid and len(solid) < len(fathers):
+            for e in fathers:
+                if e not in solid:
+                    e["flags"].append("אב לפי פתרון שם מול אב מפורש")
+                    e["confidence"] = min(e["confidence"], 0.3)
+    # נכד שנולד לפני ה"סב" – ההורה בעץ הוא בן דוד או נכד באותו שם
+    kids_of: dict[str, list[str]] = defaultdict(list)
+    for e in edges.values():
+        if e["relation"] == "parent" and e["confidence"] >= 0.5:
+            kids_of[e["b"]].append(e["a"])
+    for child, es in by_child.items():
+        for e in es:
+            if e["confidence"] < 0.5:
+                continue
+            pb = _year(persons[e["b"]]["born"])
+            if pb and any((_year(persons[c]["born"]) or 9999) < pb + 25 for c in kids_of.get(child, [])):
+                e["flags"].append("נכד שנולד לפני הסב")
                 e["confidence"] = min(e["confidence"], 0.3)
     _break_cycles(persons, edges)
     # סב שנרשם כהורה: "אימה רחל, בתו של ר' דוד" – הדף קיבל גם את ר' דוד כהורה. אם הורה אחד הוא ילד של הורה אחר

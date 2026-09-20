@@ -116,6 +116,9 @@ _OBJECT_TAIL_RE = re.compile(r"(?:(?<![א-ת])(?:של|את|עם)\s*|(?<![א-ת])
 _PRE_LISTHEAD_RE = re.compile(r"^\s*[*#:;]+\s*(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)(?P<n>" + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,3})\s*[,–\-(.]\s*$")
 # פסוקית לוואי בין הנושא לביטוי הקשר: "לר' ברוך יהודה, שהיה מראשי התנועה וחבר המועצה, בנו של ..." – מדלגים עליה
 _TRAILING_CLAUSE_RE = re.compile(r",\s*(?:ש|אשר|כ|ה|מ)[^,]{3,140},\s*$")
+# "בנו של משה בלוי בנו של יצחק שלמה בלוי": המושא של "בנו של" הקודם (גם בלי קישור) הוא הנושא של הבא
+_CHAIN_OBJECT_RE = re.compile(r"(?P<pre>.*?)(?<![א-ת])(?:בנו|בתו|בנם|בתם|בן|בת)\s+(?:של\s+)?(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)(?P<n>"
+                              + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,3})\s*,?\s*$", re.S)
 _REL_WORDS = r"בתו|בנו|בתה|בנה|בתם|בנם|אחיו|אחותו|אחיה|אחותה|אימו|אימה|אמו|אביו|אמה|אביה|אמם|אימם|אביהם|אשתו|בעלה|רעייתו|נכדו|נכדתו"
 _ORD2 = r"(?:\s+(?:הבכור|הבכורה|השני|השנייה|השניה|השלישי|השלישית|הרביעי|החמישי|הצעיר|הצעירה|היחיד|היחידה|הגדול|הגדולה|הקטן|הקטנה|הראשונה|הראשון))?"
 # "... בתו חנה " / "אחיו ר' משה " לפני ביטוי הקשר: השם הלא-מקושר הוא הנושא (pre חמדני – מילת הקשר הקרובה ביותר)
@@ -778,6 +781,17 @@ class Extractor:
                 if resolved:
                     return resolved, True, _gender_from_honorific(hon), wt.display_name(resolved)
                 return "~" + name, False, _gender_from_honorific(hon), name
+        if chain_ok:
+            cm = _CHAIN_OBJECT_RE.match(before)
+            if cm:
+                hon = (cm.group("hon") or "").strip()
+                name = self.unlinked_name(cm.group("n"), hon)
+                if name and not _looks_like_year(name) and (hon or " " in name or self.plain_name_ok(name)):
+                    allow = not getattr(self, "_in_list", False)
+                    resolved = self.resolve_alias((hon + " " + name).strip(), allow) or self.resolve_alias(name, allow)
+                    if resolved:
+                        return resolved, True, _gender_from_honorific(hon), wt.display_name(resolved)
+                    return "~" + name, False, _gender_from_honorific(hon), name
         nm = _PRE_NAME_RE.match(before) or (_PRE_NAME_LOOSE_RE.match(before) if self.name_tokens else None)
         if nm:
             name = self.unlinked_name(nm.group("n"), nm.group("hon") or "")

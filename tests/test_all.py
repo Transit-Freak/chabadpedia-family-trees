@@ -702,6 +702,42 @@ class TestRealTextRules(unittest.TestCase):
         wives = [p for p in graph["persons"] if p.startswith("~מתיה")]
         self.assertEqual(len(wives), 1, wives)
 
+    def test_chain_of_unlinked_fathers(self):
+        ex = self._strict()
+        out, _ = ex.extract("פלוני 1", "נולד בה' אייר תש\"ב להוריו ר' ברוך יהודה (בנו של משה וילהלם בנו של [[שאול וילהלם]]) וזוגתו מרת חנה.")
+        triples = {(r.relation, r.person, r.relative) for r in out}
+        self.assertIn(("parent", "פלוני 1", "~ברוך יהודה"), triples, triples)
+        self.assertIn(("parent", "~ברוך יהודה", "~משה וילהלם"), triples, triples)
+        self.assertIn(("parent", "~משה וילהלם", "שאול וילהלם"), triples, triples)
+        self.assertNotIn(("parent", "פלוני 1", "שאול וילהלם"), triples)
+
+    def test_wrong_namesake_resolution_is_undone(self):
+        from dataclasses import asdict
+        from chabadtrees.extract import Relation
+        from chabadtrees.graph import build_graph
+        def page(t, born=None): return {"title": t, "gender_votes": {"m": 3, "f": 0}, "born": born, "died": None, "categories": [], "surname": "בלוי"}
+        pages = {"משה בלוי": page("משה בלוי", 'תשי"ב'), "יצחק שלמה בלוי": page("יצחק שלמה בלוי", 'תרי"ז'),
+                 "יוסף ישראל בלוי": page("יוסף ישראל בלוי", 'תש"ב'), "יעקב זלמן בלוי": page("יעקב זלמן בלוי", 'תרפ"ח')}
+        s1 = "נולד בה' אייר תש\"ב להוריו ר' ברוך יהודה (בנו של משה בלוי בנו של יצחק שלמה בלוי)."
+        rels = [asdict(Relation("יוסף ישראל בלוי", "~ברוך יהודה", "parent", "יוסף ישראל בלוי", s1, pattern="born_to", confidence=0.7,
+                                relative_gender="m", relative_has_article=False, relative_name="ברוך יהודה")),
+                asdict(Relation("~ברוך יהודה", "משה בלוי", "parent", "יוסף ישראל בלוי", s1, pattern="child_of", confidence=0.6, alias=True,
+                                person_gender="m", person_has_article=False, person_name="ברוך יהודה")),
+                asdict(Relation("משה בלוי", "יצחק שלמה בלוי", "parent", "יוסף ישראל בלוי", s1, pattern="child_of", confidence=0.6, alias=True)),
+                asdict(Relation("משה בלוי", "יעקב זלמן בלוי", "parent", "משה בלוי", "נולד לאביו הרב יעקב זלמן בלוי", pattern="born_to", confidence=0.85)),
+                asdict(Relation("משה אורי בלוי", "יצחק שלמה בלוי", "parent", "יצחק שלמה בלוי", "*בנו, הרב משה אורי בלוי", pattern="child_is",
+                                confidence=0.6, person_gender="m", person_has_article=False))]
+        graph = build_graph(pages, rels, CFG)
+        E = graph["edges"]
+        wrong = [e for e in E if e["relation"] == "parent" and e["b"] == "משה בלוי" and e["a"].startswith("~ברוך") and e["confidence"] >= 0.5]
+        self.assertFalse(wrong, wrong)
+        fathers_of_article = [e["b"] for e in E if e["relation"] == "parent" and e["a"] == "משה בלוי" and e["confidence"] >= 0.5]
+        self.assertEqual(fathers_of_article, ["יעקב זלמן בלוי"])
+        baruch = next(e["b"] for e in E if e["relation"] == "parent" and e["a"].startswith("~ברוך") and e["confidence"] >= 0.5)
+        self.assertNotEqual(baruch, "משה בלוי")
+        grand = [e["b"] for e in E if e["relation"] == "parent" and e["a"] == baruch and e["confidence"] >= 0.5]
+        self.assertEqual(grand, ["יצחק שלמה בלוי"], (baruch, grand))      # משה (אורי) בלוי – בן של יצחק שלמה, לא הערך
+
     def test_grandparent_recorded_as_parent_is_demoted(self):
         from chabadtrees.graph import _consistency
         persons = {k: {"name": k, "gender": g, "born": None, "died": None, "flags": []} for k, g in
