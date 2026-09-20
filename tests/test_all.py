@@ -281,6 +281,8 @@ class TestPipelineWithMock(MockServerMixin, unittest.TestCase):
             anon = {b["person"] for b in t["chart"].boxes.values() if b["person"] in getattr(t["chart"], "anonymous", ())}
             self.assertTrue(unl <= anon, f"אנשים בלי ערך בעץ {t['title']}: {unl - anon}")
             for p in unl:
+                if "virtual" in self.graph["persons"][p].get("flags", []):
+                    continue        # בן/בת בלי שם שהוסקו מ"חתנו X" – אין שם להדליף
                 self.assertNotIn(self.graph["persons"][p]["name"], t["wikitext"], "שם של אדם בלי ערך הודלף לעץ")
             self.assertNotIn("ילדים נוספים", t["wikitext"])
             self.assertNotIn("ילדים:", t["wikitext"])
@@ -425,6 +427,59 @@ class TestRealTextRules(unittest.TestCase):
         self.assertNotIn(("parent", "פלוני 1", "שאול וילהלם"), triples)
         self.assertNotIn(("parent", "פלוני 1", "שמואל גליצנשטיין"), triples)
         self.assertNotIn(("parent", "פלוני 1", "חנה וילהלם"), triples)
+
+    def test_grandmother_phrase_is_not_a_parent(self):
+        ex = self._strict()
+        out, _ = ex.extract("פלוני 1", "נולד בירושלים (אם אמו הרבנית מרת חנה אמסעל היא נכדת הרבנית מנוחה רחל).")
+        triples = {(r.relation, r.person, r.relative, r.side) for r in out}
+        self.assertNotIn(("parent", "פלוני 1", "~חנה אמסעל", None), triples)
+        self.assertIn(("grandparent", "פלוני 1", "~חנה אמסעל", "mother"), triples)
+
+    def test_grandparent_via_spouse_is_demoted(self):
+        from chabadtrees.graph import _consistency
+        persons = {k: {"name": k, "gender": g, "born": None, "died": None, "flags": []} for k, g in
+                   (("נחמן", "m"), ("משה", "m"), ("שושנה", "f"), ("מושקא", "f"))}
+        ev = [{"alias": False}]
+        edges = {
+            "1": {"a": "נחמן", "b": "משה", "relation": "parent", "confidence": 0.8, "flags": [], "evidence": ev},
+            "2": {"a": "משה", "b": "שושנה", "relation": "spouse", "confidence": 0.65, "flags": [], "evidence": ev},
+            "3": {"a": "שושנה", "b": "מושקא", "relation": "parent", "confidence": 0.6, "flags": [], "evidence": ev},
+            "4": {"a": "נחמן", "b": "מושקא", "relation": "parent", "confidence": 0.65, "flags": [], "evidence": ev},
+        }
+        _consistency(persons, edges)
+        self.assertLess(edges["4"]["confidence"], 0.5)
+        for k in ("1", "2", "3"):
+            self.assertGreaterEqual(edges[k]["confidence"], 0.6)
+
+    def test_son_in_law_without_named_wife_gets_anonymous_daughter(self):
+        from collections import Counter
+        from chabadtrees.graph import _infer
+        persons = {k: {"name": k, "gender": "m", "born": None, "died": None, "flags": [], "gender_votes": Counter(), "mentioned_in": set()}
+                   for k in ("רפאל", "ישראל")}
+        edges = {("ישראל", "רפאל", "parent_in_law"): {"a": "ישראל", "b": "רפאל", "relation": "parent_in_law", "confidence": 0.8, "flags": [], "evidence": []}}
+        _infer(persons, edges, 0.5)
+        virtual = [pid for pid, p in persons.items() if "virtual" in p["flags"]]
+        self.assertEqual(len(virtual), 1)
+        v = virtual[0]
+        self.assertEqual(persons[v]["gender"], "f")
+        self.assertTrue(any(e["relation"] == "parent" and e["a"] == v and e["b"] == "רפאל" for e in edges.values()))
+        self.assertTrue(any(e["relation"] == "spouse" and {e["a"], e["b"]} == {v, "ישראל"} for e in edges.values()))
+
+    def test_unlinked_daughter_with_linked_husband_stays_as_anonymous_link(self):
+        from chabadtrees.layout import TreeBuilder
+        from chabadtrees.pipeline import _drop_unlinked
+        def person(k, g): return {"name": k.lstrip("~").split("@")[0], "gender": g, "born": None, "died": None, "fetched": not k.startswith("~"), "flags": []}
+        graph = {"persons": {"יוסף": person("יוסף", "m"), "~חנה@יוסף:child": person("~חנה@יוסף:child", "f"), "שלמה": person("שלמה", "m"),
+                             "~לאה@יוסף:child": person("~לאה@יוסף:child", "f"), "~דוד": person("~דוד", "m")},
+                 "edges": [{"a": "~חנה@יוסף:child", "b": "יוסף", "relation": "parent", "confidence": 0.55, "flags": [], "evidence": []},
+                           {"a": "~חנה@יוסף:child", "b": "שלמה", "relation": "spouse", "confidence": 0.7, "flags": [], "evidence": []},
+                           {"a": "~לאה@יוסף:child", "b": "יוסף", "relation": "parent", "confidence": 0.55, "flags": [], "evidence": []},
+                           {"a": "~לאה@יוסף:child", "b": "~דוד", "relation": "spouse", "confidence": 0.7, "flags": [], "evidence": []}]}
+        tb = TreeBuilder(graph, CFG)
+        keep, anonymous = _drop_unlinked({"יוסף", "~חנה@יוסף:child", "שלמה", "~לאה@יוסף:child", "~דוד"}, tb)
+        self.assertIn("~חנה@יוסף:child", anonymous)        # בת בלי ערך שנשואה למי שיש לו ערך – נשארת בלי שם
+        self.assertNotIn("~לאה@יוסף:child", keep)          # בת בלי ערך שבעלה בלי ערך – יוצאת
+        self.assertNotIn("~דוד", keep)
 
     def test_grandparent_recorded_as_parent_is_demoted(self):
         from chabadtrees.graph import _consistency

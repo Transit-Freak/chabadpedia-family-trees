@@ -587,7 +587,8 @@ _GIVEN_SECOND = {"מענדל", "מנדל", "זלמן", "מושקא", "לאה", "
 
 def _drop_unlinked(members: set[str], tb: TreeBuilder) -> tuple[set[str], set[str]]:
     """פרטיות: מי שאין לו ערך יוצא מהעץ. נשאר (בלי שם) רק מי שבלעדיו העץ מתפרק: אדם בלי ערך שיש לו
-    לפחות שני ענפי ילדים עם צאצאים בעלי ערך, או שהוא החוליה היחידה בין הורה עם ערך לצאצא עם ערך."""
+    לפחות שני ענפי ילדים עם צאצאים בעלי ערך, שהוא החוליה היחידה בין הורה עם ערך לצאצא עם ערך,
+    או בת/בן של הורה שבעץ שנשוי/אה למי שיש לו ערך (כך החתן מופיע, בלי שם הבת)."""
     linked = {m for m in members if not m.startswith("~")}
     memo: dict[str, bool] = {}
 
@@ -614,7 +615,8 @@ def _drop_unlinked(members: set[str], tb: TreeBuilder) -> tuple[set[str], set[st
                 continue
             branches = [c for c in tb._children.get(p, []) if c in members and (c in linked or has_linked_desc(c))]
             parent_kept = any(par in keep for par in tb._parents.get(p, []))
-            if len(branches) >= 2 or (branches and parent_kept):
+            linked_spouse = any(not sp.startswith("~") for sp in tb._spouses.get(p, []))
+            if len(branches) >= 2 or (branches and parent_kept) or (parent_kept and linked_spouse):
                 keep.add(p)
                 anonymous.add(p)
                 changed = True

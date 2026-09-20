@@ -330,10 +330,25 @@ def _infer(persons: dict, edges: dict, min_conf: float) -> None:
         if e["relation"] != "parent_in_law" or e["confidence"] < min_conf:
             continue
         person, in_law = e["a"], e["b"]
-        for sp in spouses_of(edges, person):
+        known_spouses = [sp for sp in spouses_of(edges, person)
+                         if edges.get(edge_key(sp, person, "spouse"), {}).get("confidence", 0) >= min_conf]
+        for sp in known_spouses:
             g = persons[in_law]["gender"]
             if not any(persons[q["b"]]["gender"] == g and g for q in parents_of(edges, sp)):
                 add_inferred(sp, in_law, "parent", f"הוסק: {persons[person]['name']} חתן/כלה של {persons[in_law]['name']} ונשוי/אה ל{persons[sp]['name']}")
+        if not known_spouses:
+            # "חתנו ישראל גולדברג" בלי שם הבת: יש בת (בלי שם ובלי ערך) שנשואה לו – חוליה בעץ בין החותן לחתן
+            pg = persons[person]["gender"]
+            cg = {"m": "f", "f": "m"}.get(pg)
+            name = {"f": "בת", "m": "בן"}.get(cg, "בן/בת")
+            vid = f"~{name}@{in_law}:inlaw:{person}"
+            if vid not in persons:
+                persons[vid] = {"id": vid, "title": None, "name": name, "linked": False, "fetched": False, "gender": cg,
+                                "gender_votes": Counter(), "born": None, "died": None, "surname": "", "categories": [],
+                                "family_categories": [], "flags": ["virtual"], "mentioned_in": set()}
+            why = f"הוסק: {persons[person]['name']} חתן/כלה של {persons[in_law]['name']} – בן/בת בלי שם"
+            add_inferred(vid, in_law, "parent", why)
+            add_inferred(vid, person, "spouse", why)
 
 
 def _consistency(persons: dict, edges: dict) -> None:
@@ -376,6 +391,22 @@ def _consistency(persons: dict, edges: dict) -> None:
             if any(e["b"] in parents_of.get(p, ()) for p in parents_of.get(child, ()) if p != e["b"]):
                 e["flags"].append("סב שנרשם כהורה")
                 e["confidence"] = min(e["confidence"], 0.3)
+    # גם דרך בן הזוג: "אם אמו" – ההורה השני (אשת האב) הוא ילד של ה"הורה" הזה
+    spouses_solid: dict[str, set[str]] = defaultdict(set)
+    for e in edges.values():
+        if e["relation"] == "spouse" and solid(e):
+            spouses_solid[e["a"]].add(e["b"])
+            spouses_solid[e["b"]].add(e["a"])
+    for child, es in by_child.items():
+        for e in es:
+            if e["confidence"] < 0.5 or "סב שנרשם כהורה" in e["flags"]:
+                continue
+            g = e["b"]
+            for p in parents_of.get(child, ()):
+                if p != g and any(g in parents_of.get(sp, ()) for sp in spouses_solid.get(p, ()) if sp != g):
+                    e["flags"].append("סב שנרשם כהורה")
+                    e["confidence"] = min(e["confidence"], 0.3)
+                    break
     # בני זוג באותו מגדר – טעות חילוץ (הנושא של "נישאה ל..." נפל על הדף במקום על הבת)
     for e in edges.values():
         if e["relation"] == "spouse":

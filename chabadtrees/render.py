@@ -105,11 +105,15 @@ def box_content(chart: Chart, bid: str, graph: dict, cfg: dict, with_refs: bool 
     info = chart.boxes[bid]
     pid = info["person"]
     person = graph["persons"][pid]
+    node = info.get("node")
     if pid in getattr(chart, "anonymous", ()):
-        label = cfg.get("anonymous_label", "ללא ערך")       # חוליה הכרחית בלי ערך – בלי שם
+        # חוליה הכרחית בלי ערך – בלי שם, רק הקשר: "בת (ללא ערך)" תחת הורה, "אב (ללא ערך)" בראש
+        base = cfg.get("anonymous_label", "ללא ערך")
+        below = node is not None and info["role"] == "member" and node.depth > 0
+        word = ({"f": "בת", "m": "בן"} if below else {"f": "אם", "m": "אב"}).get(person.get("gender"))
+        label = f"{word} ({base})" if word else base
     else:
         label = person_label(person, cfg)
-    node = info.get("node")
     if node is not None and info["role"] == "member":
         label += spouse_inline(node, pid, chart, graph, cfg, existing)
     ref_texts: list[str] = []

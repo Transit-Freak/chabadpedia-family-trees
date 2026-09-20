@@ -1068,10 +1068,12 @@ def h_grandparent_is(self_, m, page, sentence):
     rel = self_.person_from_match(m, 1)
     if not rel:
         return []
-    w = m.group("w")
+    w = re.sub(r"\s+", " ", m.group("w"))
     side_word = m.groupdict().get("side") or ""
+    if not side_word and " " in w:
+        side_word = w.split(" ", 1)[1]          # "אם אמו" – סבתא מצד האם
     side = "father" if side_word.startswith("אב") else ("mother" if side_word.startswith("אמ") or side_word.startswith("האם") else None)
-    rg = "f" if w.startswith("סבת") else "m"
+    rg = "f" if w.startswith("סבת") or w.startswith("אם ") else "m"
     r = _mk((page, True, None, wt.display_name(page)), rel, "grandparent", m, self_, page, conf=0.75,
             relative_gender=rg, side=side)
     return [r] if r else []
@@ -1193,7 +1195,7 @@ def build_patterns() -> list[tuple[str, re.Pattern, object]]:
     add("born_to_hon", r"נולד(?:ה)?(?![א-ת])[^.\n]{0,120}?(?<![א-ת])ל(?P<k1>)(?P<h1>(?:(?:" + _HON_ALT + r")\s+)+)" + _idx(UNLINKED_TPL, 1)
         + r"(?:\s*,?\s*ו(?:ל)?(?P<k2>אמו|אמה|אימו|אימה)?\s*,?\s*" + REF(2) + r")?", h_born_to)
     # אביו, X / אמו הייתה X
-    add("parent_is", r"(?:^|[,.;:()]\s*|(?<!מצד)\s+ו?)(?<!אחי )(?<!אחות )(?<!גיס )(?<!חותן )(?<!דוד )(?<!דודת )(?<!סב )(?<!סבת )(?<!אח )(?<!בן )(?<!בת )"
+    add("parent_is", r"(?:^|[,.;:()]\s*|(?<!מצד)\s+ו?)(?<!אחי )(?<!אחות )(?<!גיס )(?<!חותן )(?<!דוד )(?<!דודת )(?<!סב )(?<!סבת )(?<!אח )(?<!בן )(?<!בת )(?<!אם )(?<!אבי )"
         r"(?P<w>אביו|אמו|אביה|אמה|אביהם|אמם)" + VERB + r"\s*,?\s*" + NOTOF + REF(1), h_parent_is)
     # X, אביו של Y
     add("parent_of", r"(?<![א-ת])(?P<w>אביו|אמו|אביה|אמה|אביהם|אמם)\s+של\s+" + REF(1) + r"(?:\s*,?\s*ו(?:של\s+)?" + REF(2) + r")?", h_parent_of)
@@ -1229,7 +1231,8 @@ def build_patterns() -> list[tuple[str, re.Pattern, object]]:
     # X, נכדו של Y / נינו של
     add("grandparent_of", r"(?<![א-ת])(?P<w>נכדו|נכדתו|נכדם|נכדתם|נינו|נינתו)\s+של\s+" + REF(1), h_grandparent_of)
     # סבו מצד אביו, X
-    add("grandparent_is", r"(?:^|[,.;:()]\s*|\s+ו?)(?P<w>סבו|סבתו|סבה|סבתה)(?:\s+מצד\s+(?P<side>אביו|אמו|אביה|אמה|האב|האם))?"
+    add("grandparent_is", r"(?:^|[,.;:()]\s*|\s+ו?)(?P<w>סבו|סבתו|סבה|סבתה|אבי\s+אביו|אבי\s+אמו|אם\s+אביו|אם\s+אמו|אבי\s+אביה|אבי\s+אמה|אם\s+אביה|אם\s+אמה)"
+        r"(?:\s+מצד\s+(?P<side>אביו|אמו|אביה|אמה|האב|האם))?"
         + VERB + r"\s*,?\s*" + NOTOF + REF(1), h_grandparent_is)
     # X, סבו של Y
     add("grandparent_rev", r"(?<![א-ת])(?P<w>סבו|סבתו|סבה|סבתה)\s+של\s+" + REF(1), h_grandparent_rev)
