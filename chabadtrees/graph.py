@@ -272,6 +272,35 @@ def _merge_unlinked(persons: dict, edges: dict) -> None:
     def nm(pid: str) -> str:
         return persons[pid]["name"] if pid.startswith("~") else wt.display_name(pid)
 
+    born = {pid: _year(p.get("born")) for pid, p in persons.items()}
+    spouses_map: dict[str, set[str]] = defaultdict(set)
+    children_map: dict[str, set[str]] = defaultdict(set)
+    for (a, b, rel) in edges:
+        if rel == "spouse":
+            spouses_map[a].add(b); spouses_map[b].add(a)
+        elif rel == "parent":
+            children_map[b].add(a)
+
+    def est_born(pid: str, depth: int = 2) -> int | None:
+        if born.get(pid):
+            return born[pid]
+        if depth <= 0:
+            return None
+        for sp in spouses_map.get(pid, ()):
+            if born.get(sp):
+                return born[sp]
+        kids = [y for y in (est_born(c, depth - 1) for c in children_map.get(pid, ())) if y]
+        if kids:
+            return min(kids) - 25
+        pars = [y for y in (est_born(q, depth - 1) for q in parents_of.get(pid, ())) if y]
+        if pars:
+            return max(pars) + 25
+        return None
+
+    def years_ok(x: str, k: str) -> bool:
+        ex, ek = est_born(x), est_born(k)
+        return not (ex and ek and abs(ex - ek) > 40)
+
     uf = UnionFind()
     known_match: dict[str, set[str]] = defaultdict(set)      # לא-מקושר → ערכים תואמים באותה משבצת
     for sl, ids in by_slot.items():
@@ -282,10 +311,10 @@ def _merge_unlinked(persons: dict, edges: dict) -> None:
             continue
         for i, x in enumerate(unl):
             for y in unl[i + 1:]:
-                if _names_match(nm(x), nm(y)):
+                if _names_match(nm(x), nm(y)) and years_ok(x, y):
                     uf.union(x, y)
             for k in ids:
-                if not k.startswith("~") and k in persons and _names_match(nm(x), nm(k)):
+                if not k.startswith("~") and k in persons and _names_match(nm(x), nm(k)) and years_ok(x, k):
                     known_match[x].add(k)
     # אותו שם באותו דף מקור (למשל "אשתו חנה" ואחר כך "חנה" ברשימת הילדים – לא: רק כשאין משבצת סותרת)
     groups: dict[str, list[str]] = defaultdict(list)
@@ -322,16 +351,19 @@ def _unresolve_conflicting_aliases(persons: dict, edges: dict) -> None:
     died = {pid: _year(p.get("died")) for pid, p in persons.items()}
     solid_fathers: dict[str, set[str]] = defaultdict(set)
     children: dict[str, list[str]] = defaultdict(list)
+    children_solid: dict[str, list[str]] = defaultdict(list)      # בלי קשרים שנפתרו משם – הם עצמם החשודים
     for (a, b, rel), e in edges.items():
         if rel != "parent":
             continue
         children[b].append(a)
-        if not alias_only(e) and gender(b) == "m":
-            solid_fathers[a].add(b)
+        if not alias_only(e):
+            children_solid[b].append(a)
+            if gender(b) == "m":
+                solid_fathers[a].add(b)
     def descendants(pid: str, depth: int = 6) -> set[str]:
         out, frontier = set(), {pid}
         for _ in range(depth):
-            frontier = {c for q in frontier for c in children.get(q, [])} - out
+            frontier = {c for q in frontier for c in children_solid.get(q, [])} - out
             if not frontier:
                 break
             out |= frontier
@@ -545,6 +577,12 @@ def _merge_unlinked_by_name(persons: dict, edges: dict, max_surname_pages: int =
 
     def conflict(x: str, y: str) -> bool:
         if y in neighbours[x]:
+            return True
+        # אזכור שהופרד מערך בגלל סתירה – רק משבצת (קשר משפחתי) מצרפת אותו לאדם, לא שם בלבד
+        if any("הופרד מהערך: פתרון-שם סותר" in persons[q].get("flags", []) for q in (x, y)):
+            return True
+        ex, ey = est_born(x), est_born(y)
+        if ex and ey and abs(ex - ey) > 30:
             return True
         # סב ונכד: x הורה של מישהו ש-y ילד שלו (או להפך)
         if children_of[x] & parents_of[y] or children_of[y] & parents_of[x]:
