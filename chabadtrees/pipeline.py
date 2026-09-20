@@ -19,7 +19,7 @@ from .extract import Extractor, build_aliases
 from .persons import is_person_page
 from .graph import build_graph, parents_of, year_of
 from .layout import Marriage, TreeBuilder, TreeNode, layout_forest, ancestor_chart
-from .render import tree_page, ahnentafel_wikitext, chart_wikitext, slug
+from .render import tree_page, ahnentafel_wikitext, chart_wikitext, slug, _article_relative
 
 log = logging.getLogger(__name__)
 
@@ -440,6 +440,10 @@ def married_in(graph: dict, members: set[str], surnames: set[str], tb: TreeBuild
             continue                      # בן השושלת שנשוי לאדם מבחוץ
         if has_parents and (family_name or not spouse_is_descendant):
             continue                      # צאצא (או נישואי קרובים בתוך השושלת)
+        spouse_is_family = any(bool(graph["persons"].get(sp, {}).get("surname")) and
+                               any(_similar_surname(graph["persons"][sp]["surname"], x) for x in surnames) for sp in sps)
+        if not spouse_is_descendant and not spouse_is_family:
+            continue                      # זוג שורש (הורי הזרע, בלי ערך ובלי שם המשפחה) – אבות, לא מחותנים
         out.add(pid)                      # בן זוג של צאצא – מוצג בתוך הקופסה של בן הזוג, לא כשורש
     return out
 
@@ -614,6 +618,7 @@ _GIVEN_SECOND = {"מענדל", "מנדל", "זלמן", "מושקא", "לאה", "
 
 
 def _drop_unlinked(members: set[str], tb: TreeBuilder) -> tuple[set[str], set[str]]:
+    graph = tb.g
     """פרטיות: מי שאין לו ערך יוצא מהעץ. נשאר (בלי שם) רק מי שבלעדיו העץ מתפרק: אדם בלי ערך שיש לו
     לפחות שני ענפי ילדים עם צאצאים בעלי ערך, שהוא החוליה היחידה בין הורה עם ערך לצאצא עם ערך,
     או בת/בן של הורה שבעץ שנשוי/אה למי שיש לו ערך (כך החתן מופיע, בלי שם הבת)."""
@@ -643,7 +648,8 @@ def _drop_unlinked(members: set[str], tb: TreeBuilder) -> tuple[set[str], set[st
                 continue
             branches = [c for c in tb._children.get(p, []) if c in members and (c in linked or has_linked_desc(c))]
             parent_kept = any(par in keep for par in tb._parents.get(p, []))
-            linked_spouse = any(tb.has_article(sp) for sp in tb._spouses.get(p, []))
+            # בן זוג עם ערך, או בן זוג בלי ערך שאפשר להצביע עליו דרך קרוב עם ערך ("אשתו: בת [[X]]")
+            linked_spouse = any(tb.has_article(sp) or _article_relative(graph, sp) is not None for sp in tb._spouses.get(p, []))
             if len(branches) >= 2 or (branches and parent_kept) or (parent_kept and linked_spouse):
                 keep.add(p)
                 anonymous.add(p)

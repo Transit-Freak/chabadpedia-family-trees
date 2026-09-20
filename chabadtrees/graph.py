@@ -123,6 +123,7 @@ def build_graph(pages: dict[str, dict], relations: list[dict], config: dict) -> 
 
     # --- מיזוג אנשים לא-מקושרים בעלי אותו שם שעוגניהם קרובים ---
     _merge_unlinked(persons, edges)
+    _merge_unlinked_by_name(persons, edges, config.get("merge_by_name_max_surname_pages", 15))
 
     # --- ביטחון משולב (noisy-or) ואימות מצולב ---
     for e in edges.values():
@@ -273,6 +274,10 @@ def _merge_unlinked(persons: dict, edges: dict) -> None:
         for m in members:
             if m != rep:
                 remap[m] = rep
+    _apply_remap(persons, edges, remap)
+
+
+def _apply_remap(persons: dict, edges: dict, remap: dict[str, str]) -> None:
     if not remap:
         return
     for old, new in remap.items():
@@ -295,6 +300,58 @@ def _merge_unlinked(persons: dict, edges: dict) -> None:
         else:
             e["a"], e["b"] = nkey[0], nkey[1]
             edges[nkey] = e
+
+
+def _merge_unlinked_by_name(persons: dict, edges: dict, max_surname_pages: int = 15) -> None:
+    """מיזוג בין דפים לפי שם מלא: "בנו ר' שניאור זלמן הרטמן" בדף האב, ו"בתו רחל, אשת ר' שניאור זלמן הרטמן" בדף
+    חותנו – אותו אדם, אם השם המלא (שם פרטי + שם משפחה) מופיע בגרף בדיוק פעמיים בלי ערך: פעם כילד ופעם כבן זוג,
+    שניהם גברים (שם משפחה של אישה משתנה בנישואין), ושם המשפחה נדיר (עד max_surname_pages ערכים) – כדי לא לאחד
+    בני דודים שקרויים על שם אותו סב."""
+    surname_pages: Counter = Counter(p["surname"] for p in persons.values() if p.get("fetched") and p.get("surname"))
+    has_parent: set[str] = set()
+    has_spouse: set[str] = set()
+    parents_of: dict[str, set[str]] = defaultdict(set)
+    partners_of: dict[str, set[str]] = defaultdict(set)
+    children_of: dict[str, set[str]] = defaultdict(set)
+    for (a, b, rel), e in edges.items():
+        if rel == "parent":
+            has_parent.add(a); parents_of[a].add(b); children_of[b].add(a)
+        elif rel == "spouse":
+            has_spouse.add(a); has_spouse.add(b); partners_of[a].add(b); partners_of[b].add(a)
+    groups: dict[str, list[str]] = defaultdict(list)
+    for pid, p in persons.items():
+        if not pid.startswith("~"):
+            continue
+        key = _name_key(_given_part(p["name"]))
+        if len(key.split()) < 2:
+            continue
+        groups[key].append(pid)
+    remap: dict[str, str] = {}
+    for key, ids in groups.items():
+        if len(ids) != 2:
+            continue
+        child = [x for x in ids if x in has_parent and x not in has_spouse]
+        spouse = [x for x in ids if x in has_spouse and x not in has_parent]
+        if len(child) != 1 or len(spouse) != 1:
+            continue
+        c, sp = child[0], spouse[0]
+        def gender(pid: str) -> str | None:      # המגדר הסופי נקבע רק אחרי המיזוגים – כאן לפי ההצבעות עד כה
+            v = persons[pid].get("gender_votes") or {}
+            return "m" if v.get("m", 0) > v.get("f", 0) else "f" if v.get("f", 0) > v.get("m", 0) else persons[pid].get("gender")
+        gc, gs = gender(c), gender(sp)
+        # רק גברים: שם המשפחה של אישה משתנה בנישואין, ו"רחל מזל" בת של מזל ואשת מזל הן שתי נשים
+        if "f" in (gc, gs) or "m" not in (gc, gs):
+            continue
+        # "אשתו חיה שרה" ו"בתו חיה שרה" באותו בית – שתי נשים; בן זוג של ההורה או של אח אינו הילד
+        family = set(parents_of[c]) | {k for par in parents_of[c] for k in children_of[par]}
+        if partners_of[sp] & family:
+            continue
+        surname = _surname_from_name(persons[c]["name"]) or _surname_from_name(persons[sp]["name"])
+        if not surname or not 1 <= surname_pages.get(surname, 0) <= max_surname_pages:
+            continue
+        remap[sp] = c
+        persons[c]["flags"].append("מוזג לפי שם מלא")
+    _apply_remap(persons, edges, remap)
 
 
 def parents_of(edges: dict | list, pid: str) -> list[dict]:
@@ -321,6 +378,16 @@ def _infer(persons: dict, edges: dict, min_conf: float) -> None:
                       "flags": ["inferred", "no_ref"], "side": None,
                       "evidence": [{"source_page": "", "text": why, "refs": [], "method": "inference", "pattern": "", "confidence": conf}]}
 
+    # אב ואם של אותו ילד – בני זוג ("נולד לאביו X ולאמו Y")
+    parents_by_child: dict[str, list[str]] = defaultdict(list)
+    for (a, b, rel), e in list(edges.items()):
+        if rel == "parent" and e["confidence"] >= min_conf:
+            parents_by_child[a].append(b)
+    for child, pars in parents_by_child.items():
+        fathers = [p for p in pars if persons[p]["gender"] == "m"]
+        mothers = [p for p in pars if persons[p]["gender"] == "f"]
+        if len(fathers) == 1 and len(mothers) == 1:
+            add_inferred(fathers[0], mothers[0], "spouse", f"הוסק: {persons[fathers[0]]['name']} ו{persons[mothers[0]]['name']} הורי {persons[child]['name']}")
     # אחים חולקים הורים
     for key, e in list(edges.items()):
         if e["relation"] != "sibling" or e["confidence"] < min_conf:

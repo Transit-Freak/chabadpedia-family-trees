@@ -74,21 +74,44 @@ def sanitize_ref(ref: str) -> str:
 _PARENTS_CACHE: dict[int, tuple[int, dict]] = {}
 
 
-def _article_parent(graph: dict, pid: str) -> str | None:
-    """הורה עם ערך של אדם בלי ערך (האב קודם) – כדי לכתוב "אשתו: בת [[האב]]" בלי לנקוב בשמה."""
+def _relatives_maps(graph: dict) -> tuple[dict, dict, dict]:
+    """(הורים, אחים, גיסים) לפי מזהה – נבנה פעם אחת לגרף."""
     key = id(graph)
     cached = _PARENTS_CACHE.get(key)
     if cached is None or cached[0] != len(graph["edges"]):
         pm: dict[str, list[str]] = {}
+        sm: dict[str, list[str]] = {}
+        im: dict[str, list[str]] = {}
         for e in graph["edges"]:
-            if e["relation"] == "parent" and e["confidence"] >= 0.5:
+            if e["confidence"] < 0.5:
+                continue
+            if e["relation"] == "parent":
                 pm.setdefault(e["a"], []).append(e["b"])
+            elif e["relation"] == "sibling":
+                sm.setdefault(e["a"], []).append(e["b"]); sm.setdefault(e["b"], []).append(e["a"])
+            elif e["relation"] == "sibling_in_law":
+                im.setdefault(e["a"], []).append(e["b"]); im.setdefault(e["b"], []).append(e["a"])
         _PARENTS_CACHE.clear()
-        _PARENTS_CACHE[key] = (len(graph["edges"]), pm)
+        _PARENTS_CACHE[key] = (len(graph["edges"]), (pm, sm, im))
         cached = _PARENTS_CACHE[key]
-    pars = [p for p in cached[1].get(pid, []) if graph["persons"].get(p, {}).get("fetched")]
-    pars.sort(key=lambda p: 0 if graph["persons"][p].get("gender") == "m" else 1)
-    return pars[0] if pars else None
+    return cached[1]
+
+
+def _article_relative(graph: dict, pid: str) -> tuple[str, str] | None:
+    """קרוב עם ערך של אדם בלי ערך – הורה (האב קודם) ואם אין, אח/ות – כדי לכתוב "אשתו: בת [[האב]]" בלי לנקוב בשמה."""
+    pm, sm, _im = _relatives_maps(graph)
+    persons = graph["persons"]
+    for kind, cands in (("parent", pm.get(pid, [])), ("sibling", sm.get(pid, []))):
+        arts = [p for p in cands if persons.get(p, {}).get("fetched")]
+        arts.sort(key=lambda p: 0 if persons[p].get("gender") == "m" else 1)
+        if arts:
+            return kind, arts[0]
+    return None
+
+
+def _article_parent(graph: dict, pid: str) -> str | None:
+    rel = _article_relative(graph, pid)
+    return rel[1] if rel and rel[0] == "parent" else None
 
 
 def tree_link(chart: Chart, existing: dict | None, pid: str) -> str:
@@ -121,10 +144,12 @@ def spouse_inline(node, pid: str, chart: Chart, graph: dict, cfg: dict, existing
         pg, sg = person.get("gender"), sperson.get("gender")
         link_pid = sp
         if hide and not sperson.get("fetched"):
-            par = _article_parent(graph, sp)
-            if not par:
+            rel = _article_relative(graph, sp)
+            if not rel:
                 continue
-            word = {"f": "בת", "m": "בן"}.get(sg or {"m": "f", "f": "m"}.get(pg))
+            kind, par = rel
+            g = sg or {"m": "f", "f": "m"}.get(pg)
+            word = ({"f": "בת", "m": "בן"} if kind == "parent" else {"f": "אחות", "m": "אח"}).get(g)
             if not word:
                 continue
             label = f"{word} {person_label(persons[par], cfg, years=False)}"
@@ -177,6 +202,20 @@ def box_content(chart: Chart, bid: str, graph: dict, cfg: dict, with_refs: bool 
         link = tree_link(chart, existing, pid)
         if link:
             label += f"<br /><small>{link}</small>"
+    if info["role"] == "member" and person.get("fetched"):
+        # "גיסו, הרב מנחם לרר" – קשר למשפחה אחרת שכתוב בערך; רק כשהגיס יש לו ערך ואינו מופיע בעץ הזה
+        _pm, _sm, im = _relatives_maps(graph)
+        shown = {b["person"] for b in chart.boxes.values()}
+        lines = []
+        for il in im.get(pid, []):
+            ip = graph["persons"].get(il, {})
+            if not ip.get("fetched") or il in shown:
+                continue
+            word = "גיסתו" if ip.get("gender") == "f" else "גיסו"
+            link = tree_link(chart, existing, il)
+            lines.append(f"{word}: {person_label(ip, cfg, years=False)}" + (f" {link}" if link else ""))
+        if lines:
+            label += "<br /><small>" + "; ".join(lines[:3]) + "</small>"
     if node is not None and info["role"] == "member" and getattr(node, "extra_children", None):
         names = []
         for c in node.extra_children:
