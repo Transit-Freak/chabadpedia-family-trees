@@ -137,7 +137,8 @@ class TestGraph(unittest.TestCase):
                "pattern": "x", "confidence": 0.9, "person_gender": None, "relative_gender": None, "side": None,
                "person_has_article": True, "relative_has_article": True, "person_name": "ילד", "relative_name": "הורה", "order": 0}
         graph = build_graph(pages, [rel], CFG)
-        self.assertLessEqual(graph["edges"][0]["confidence"], 0.3)
+        # הקישור להורה שנולד אחרי הילד נפסל: או שהקשר ירד, או שהאזכור הופרד מהערך לאדם בלי ערך
+        self.assertFalse([e for e in graph["edges"] if e["a"] == "ילד" and e["b"] == "הורה" and e["confidence"] > 0.3])
 
 
 class TestLayout(unittest.TestCase):
@@ -611,8 +612,8 @@ class TestRealTextRules(unittest.TestCase):
         from dataclasses import asdict
         from chabadtrees.extract import Relation
         from chabadtrees.graph import build_graph
-        pages = {t: {"title": t, "gender_votes": {"m": 3, "f": 0}, "born": None, "died": None, "categories": [], "surname": t.split()[-1]}
-                 for t in ("יוסף הרטמן", "אפרים לרר", "מנחם לרר")}
+        def page(t, born=None): return {"title": t, "gender_votes": {"m": 3, "f": 0}, "born": born, "died": None, "categories": [], "surname": t.split()[-1]}
+        pages = {"יוסף הרטמן": page("יוסף הרטמן", 'תש"ב'), "אפרים לרר": page("אפרים לרר"), "מנחם לרר": page("מנחם לרר", 'תש"ח')}
         line = 'התחתן עם מתיה לרר, בתו של הרב אפרים צבי לרר, מחסידי חב"ד בבני ברק.'
         rels = [asdict(Relation("יוסף הרטמן", "~מתיה לרר", "spouse", "יוסף הרטמן", line, pattern="spouse_verb", confidence=0.7,
                                 relative_gender="f", relative_has_article=False, relative_name="מתיה לרר")),
@@ -620,14 +621,15 @@ class TestRealTextRules(unittest.TestCase):
                                 person_gender="f", relative_gender="m", person_has_article=False, relative_has_article=False,
                                 person_name="מתיה לרר", relative_name="אפרים צבי לרר")),
                 asdict(Relation("מנחם לרר", "אפרים לרר", "parent", "אפרים לרר", "*בנו, הרב מנחם לרר", pattern="child_is", confidence=0.8)),
-                # שם אמצעי, אבל בן של הערך – לא הערך עצמו
-                asdict(Relation("~אפרים צבי לרר", "אפרים לרר", "parent", "מנחם לרר", "*אחיו ר' אפרים צבי לרר", pattern="child_unlinked",
+                # נכד שקרוי על שם סבו: בן של מנחם – לא הערך עצמו, ורחוק בשנים מאבי מתיה
+                asdict(Relation("~אפרים צבי לרר", "מנחם לרר", "parent", "מנחם לרר", "*בנו ר' אפרים צבי לרר", pattern="child_unlinked",
                                 confidence=0.55, person_gender="m", person_has_article=False, person_name="אפרים צבי לרר"))]
         graph = build_graph(pages, rels, CFG)
         wife = next(p for p in graph["persons"] if p.startswith("~מתיה"))
         fathers = [e["b"] for e in graph["edges"] if e["relation"] == "parent" and e["a"] == wife]
         self.assertEqual(fathers, ["אפרים לרר"])
-        self.assertTrue(any(e["relation"] == "parent" and e["b"] == "אפרים לרר" and e["a"].startswith("~אפרים צבי") for e in graph["edges"]))
+        grandson = [e["a"] for e in graph["edges"] if e["relation"] == "parent" and e["b"] == "מנחם לרר"]
+        self.assertTrue(grandson and grandson[0].startswith("~אפרים צבי"), grandson)
 
     def test_dropped_middle_name_merges_across_pages(self):
         from dataclasses import asdict
@@ -737,6 +739,89 @@ class TestRealTextRules(unittest.TestCase):
         self.assertNotEqual(baruch, "משה בלוי")
         grand = [e["b"] for e in E if e["relation"] == "parent" and e["a"] == baruch and e["confidence"] >= 0.5]
         self.assertEqual(grand, ["יצחק שלמה בלוי"], (baruch, grand))      # משה (אורי) בלוי – בן של יצחק שלמה, לא הערך
+
+    def test_birth_year_from_category(self):
+        ex = self._strict()
+        _out, info = ex.extract("פלוני 1", "פלוני 1 היה חסיד.\n[[קטגוריה:אישים שנולדו בשנת תרצ\"ז]]\n[[קטגוריה:אישים שנפטרו בשנת תשע\"ט]]")
+        self.assertEqual(info["born"], 'תרצ"ז')
+        self.assertEqual(info["died"], 'תשע"ט')
+
+    def test_descriptor_before_parenthesis_is_skipped(self):
+        ex = self._strict()
+        out, _ = ex.extract("פלוני 1", "נולד בירושלים לר' ברוך יהודה וילהלם, שהיה מראשי התנועה, בנו של ר' משה וילהלם, מנהיג תנועת אגודת ישראל בארץ (בנו של [[שאול וילהלם]]).")
+        triples = {(r.relation, r.person, r.relative) for r in out}
+        self.assertIn(("parent", "~משה וילהלם", "שאול וילהלם"), triples, triples)
+        self.assertNotIn(("parent", "פלוני 1", "שאול וילהלם"), triples)
+
+    def test_segal_in_the_middle_of_a_name(self):
+        ex = self._strict()
+        self.assertEqual(ex.unlinked_name('שאול סג"ל וילהלם'), 'שאול סג"ל וילהלם')
+
+    def test_linked_brother_followed_by_verb_is_the_subject(self):
+        ex = self._strict()
+        out, _ = ex.extract("פלוני 1", "אחיו ר' [[שאול וילהלם]] היה נשוי למרת חנה, בת הרב [[שמואל גליצנשטיין]], שד\"ר כולל חב\"ד.")
+        triples = {(r.relation, r.person, r.relative) for r in out}
+        self.assertIn(("spouse", "שאול וילהלם", "~חנה"), triples, triples)
+        self.assertTrue(("sibling", "שאול וילהלם", "פלוני 1") in triples or ("sibling", "פלוני 1", "שאול וילהלם") in triples, triples)
+        self.assertNotIn(("spouse", "פלוני 1", "~חנה"), triples)
+        self.assertNotIn(("sibling", "פלוני 1", "שמואל גליצנשטיין"), triples)
+
+    def test_far_apart_namesake_sibling_is_separated(self):
+        from dataclasses import asdict
+        from chabadtrees.extract import Relation
+        from chabadtrees.graph import build_graph
+        def page(t, born): return {"title": t, "gender_votes": {"m": 3, "f": 0}, "born": born, "died": None, "categories": [], "surname": "בלוי"}
+        pages = {"יצחק שלמה בלוי": page("יצחק שלמה בלוי", 'תרי"ז'), "ברוך יהודה בלוי": page("ברוך יהודה בלוי", 'תשל"ג')}
+        s1 = "אחיו ר' ברוך יהודה בלוי היה נשוי למרת חוה לאה."
+        rels = [asdict(Relation("ברוך יהודה בלוי", "יצחק שלמה בלוי", "sibling", "יצחק שלמה בלוי", s1, pattern="spouse_verb+subject", confidence=0.7, alias=True)),
+                asdict(Relation("ברוך יהודה בלוי", "~חוה לאה", "spouse", "יצחק שלמה בלוי", s1, pattern="spouse_verb", confidence=0.7, alias=True,
+                                relative_gender="f", relative_has_article=False, relative_name="חוה לאה"))]
+        graph = build_graph(pages, rels, CFG)
+        E = graph["edges"]
+        self.assertFalse([e for e in E if e["relation"] == "sibling" and "ברוך יהודה בלוי" in (e["a"], e["b"]) and e["confidence"] >= 0.5])
+        sep = [p for p in graph["persons"] if p.startswith("~ברוך יהודה בלוי")]
+        self.assertEqual(len(sep), 1, sep)
+        self.assertTrue(any(e["relation"] == "spouse" and sep[0] in (e["a"], e["b"]) for e in E))
+
+    def test_yiddish_surname_spelling_merges(self):
+        from dataclasses import asdict
+        from chabadtrees.extract import Relation
+        from chabadtrees.graph import build_graph
+        pages = {t: {"title": t, "gender_votes": {"m": 3, "f": 0}, "born": None, "died": None, "categories": [], "surname": "בלוי"}
+                 for t in ("יצחק שלמה בלוי", "עמרם בלוי", "יוסף ישראל בלוי")}
+        rels = [asdict(Relation("משה אורי בלוי", "יצחק שלמה בלוי", "parent", "יצחק שלמה בלוי", "*בנו, הרב משה אורי בלוי", pattern="child_is",
+                                confidence=0.6, person_gender="m", person_has_article=False)),
+                asdict(Relation("~ברוך יהודה", "משה אורי בלוי", "parent", "יוסף ישראל בלוי", "להוריו ר' ברוך יהודה (בנו של משה אורי בלוי)", pattern="child_of",
+                                confidence=0.6, person_gender="m", person_has_article=False, person_name="ברוך יהודה", relative_has_article=False)),
+                asdict(Relation("יוסף ישראל בלוי", "~ברוך יהודה", "parent", "יוסף ישראל בלוי", "להוריו ר' ברוך יהודה (בנו של משה אורי בלוי)", pattern="born_to",
+                                confidence=0.7, relative_gender="m", relative_has_article=False, relative_name="ברוך יהודה")),
+                asdict(Relation("עמרם בלוי", "~ברוך יהודה בלויא", "parent", "עמרם בלוי", "נולד לר' ברוך יהודה בלויא, בנו של ר' משה אורי בלויא", pattern="born_to_hon",
+                                confidence=0.7, relative_gender="m", relative_has_article=False, relative_name="ברוך יהודה בלויא")),
+                asdict(Relation("~ברוך יהודה בלויא", "~משה אורי בלויא", "parent", "עמרם בלוי", "נולד לר' ברוך יהודה בלויא, בנו של ר' משה אורי בלויא", pattern="child_of",
+                                confidence=0.6, person_gender="m", relative_gender="m", person_has_article=False, relative_has_article=False,
+                                person_name="ברוך יהודה בלויא", relative_name="משה אורי בלויא"))]
+        graph = build_graph(pages, rels, CFG)
+        P = graph["persons"]
+        self.assertEqual([p for p in P if "משה אורי" in p], ["משה אורי בלוי"])
+        baruch = [p for p in P if p.startswith("~ברוך יהודה")]
+        self.assertEqual(len(baruch), 1, baruch)
+        kids = sorted(e["a"] for e in graph["edges"] if e["relation"] == "parent" and e["b"] == baruch[0] and e["confidence"] >= 0.5)
+        self.assertEqual(kids, ["יוסף ישראל בלוי", "עמרם בלוי"])
+
+    def test_article_merge_respects_a_different_father(self):
+        from dataclasses import asdict
+        from chabadtrees.extract import Relation
+        from chabadtrees.graph import build_graph
+        pages = {t: {"title": t, "gender_votes": {"m": 3, "f": 0}, "born": None, "died": None, "categories": [], "surname": t.split()[-1]}
+                 for t in ("שלום לאופר", "מרדכי מנשה לאופר", "יעקב יהושע לאופר", "מנחם חבקוק בלוי")}
+        rels = [asdict(Relation("שלום לאופר", "מרדכי מנשה לאופר", "parent", "שלום לאופר", "נולד לאביו הרב מרדכי מנשה לאופר", pattern="born_to", confidence=0.85)),
+                asdict(Relation("~שלום שמואל שבתי לאופר", "יעקב יהושע לאופר", "parent", "יעקב יהושע לאופר", "*בנו, ר' שלום שמואל שבתי לאופר", pattern="child_unlinked",
+                                confidence=0.55, person_gender="m", person_has_article=False, person_name="שלום שמואל שבתי לאופר")),
+                asdict(Relation("~שלום שמואל שבתי לאופר", "מנחם חבקוק בלוי", "parent_in_law", "מנחם חבקוק בלוי", "* חתנו, הרב שלום שמואל שבתי לאופר", pattern="child_in_law_is",
+                                confidence=0.6, person_gender="m", person_has_article=False, person_name="שלום שמואל שבתי לאופר"))]
+        graph = build_graph(pages, rels, CFG)
+        self.assertTrue(any(p.startswith("~שלום שמואל שבתי") for p in graph["persons"]))     # לא מוזג לערך "שלום לאופר" – אב אחר
+        self.assertFalse([e for e in graph["edges"] if e["relation"] == "parent_in_law" and e["a"] == "שלום לאופר"])
 
     def test_grandparent_recorded_as_parent_is_demoted(self):
         from chabadtrees.graph import _consistency

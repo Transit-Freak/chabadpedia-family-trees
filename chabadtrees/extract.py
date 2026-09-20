@@ -43,6 +43,7 @@ STOPWORDS = {
 }
 STOPWORDS |= wt.SUFFIX_WORDS
 _TOKEN_EXCLUDE = {"של", "בן", "בת", "על", "עם", "את", "מן", "או", "גם", "לא", "זה", "כל", "אל", "הוא", "היא", "רב", "ראש", "אב\"ד"}
+NAME_INFIX = {"סג\"ל", "הכהן", "הלוי", "כ\"ץ", "הכ\"ץ", "סגל"}
 # מילים שמופיעות בכותרות ערכים אבל אינן שמות של אנשים (לא ייכנסו ללקסיקון השמות)
 NON_NAME_WORDS = {"אשה", "אישה", "ילדים", "בנים", "בנות", "נכדים", "צאצאים", "משפחה", "בית", "עיר", "שנה", "שנים", "ימים", "חודש",
                   "יום", "ליל", "ערב", "בוקר", "אב", "אם", "אח", "אחות", "ספר", "ניגון", "שיחה", "מאמר", "קונטרס", "ישיבה", "כנסת",
@@ -80,10 +81,11 @@ def LINK(n: int) -> str:
 
 _HON_ALT = "|".join(re.escape(h) for h in HONORIFICS)
 SUBJ = ""   # הנושא מזוהה מהטקסט שלפני ההתאמה (subject_of), לא בתוך הרגקס
-_PRE_LINK_RE = re.compile(r"(?P<pre>.*?)(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)\[\[(?P<t>[^\[\]|#]+?)(?:#[^\[\]|]*)?(?:\|(?P<d>[^\[\]]*))?\]\]\s*[,–\-:(]?\s*$", re.S)
+_VERB_TAIL = r"(?:\s*,?\s*(?:היה|הייתה|היתה|הוא|היא)\s*)?"
+_PRE_LINK_RE = re.compile(r"(?P<pre>.*?)(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)\[\[(?P<t>[^\[\]|#]+?)(?:#[^\[\]|]*)?(?:\|(?P<d>[^\[\]]*))?\]\]" + _VERB_TAIL + r"\s*[,–\-:(]?\s*$", re.S)
 _PRE_NAME_RE = re.compile(r"(?P<pre>.*?)(?<![א-ת])[לבומכ]?(?P<hon>(?:(?:" + _HON_ALT + r")\s+)+)(?P<n>" + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,2})\s*[,–\-:(]\s*$", re.S)
 # בלי פסיק ("התחתן עם מרת פעשה הדסה הלפרין בתו של") – רק בריצה מלאה, כשהלקסיקון מאמת את השם
-_PRE_NAME_LOOSE_RE = re.compile(r"(?P<pre>.*?)(?<![א-ת])[לבומכ]?(?P<hon>(?:(?:" + _HON_ALT + r")\s+)+)(?P<n>" + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,3})\s*[,–\-:(]?\s*$", re.S)
+_PRE_NAME_LOOSE_RE = re.compile(r"(?P<pre>.*?)(?<![א-ת])[לבומכ]?(?P<hon>(?:(?:" + _HON_ALT + r")\s+)+)(?P<n>" + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,3})" + _VERB_TAIL + r"\s*[,–\-:(]?\s*$", re.S)
 _FILE_LINK_RE = re.compile(r"\[\[(?:קובץ|תמונה|מדיה|File|Image|Media):(?:[^\[\]]|\[\[[^\[\]]*\]\])*\]\]", re.I)
 _NAMED_AFTER_RE = re.compile(r"(?:על\s+שם|ע\"ש|לזכר|נקרא(?:ת|ו|ה)?\s+(?:על\s+)?שם|שמו\s+על\s+שם|שמה\s+על\s+שם)\s*$")
 _MARRIED_OBJECT_RE = re.compile(r"(?:נשא|נשוי|התחתן|נישא)(?:\s+לאי?שה)?\s+(?:את\s+|ל|עם\s+)(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)(?P<n>"
@@ -116,14 +118,15 @@ _OBJECT_TAIL_RE = re.compile(r"(?:(?<![א-ת])(?:של|את|עם)\s*|(?<![א-ת])
 _PRE_LISTHEAD_RE = re.compile(r"^\s*[*#:;]+\s*(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)(?P<n>" + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,3})\s*[,–\-(.]\s*$")
 # פסוקית לוואי בין הנושא לביטוי הקשר: "לר' ברוך יהודה, שהיה מראשי התנועה וחבר המועצה, בנו של ..." – מדלגים עליה
 _TRAILING_CLAUSE_RE = re.compile(r",\s*(?:ש|אשר|כ|ה|מ)[^,]{3,140},\s*$")
+_DESCRIPTOR_BEFORE_PAREN_RE = re.compile(r",\s*[^,()\[\]]{3,80}\s*\($")
 # "בנו של משה בלוי בנו של יצחק שלמה בלוי": המושא של "בנו של" הקודם (גם בלי קישור) הוא הנושא של הבא
 _CHAIN_OBJECT_RE = re.compile(r"(?P<pre>.*?)(?<![א-ת])(?:בנו|בתו|בנם|בתם|בן|בת)\s+(?:של\s+)?(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)(?P<n>"
                               + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,3})\s*,?\s*$", re.S)
 _REL_WORDS = r"בתו|בנו|בתה|בנה|בתם|בנם|אחיו|אחותו|אחיה|אחותה|אימו|אימה|אמו|אביו|אמה|אביה|אמם|אימם|אביהם|אשתו|בעלה|רעייתו|נכדו|נכדתו"
 _ORD2 = r"(?:\s+(?:הבכור|הבכורה|השני|השנייה|השניה|השלישי|השלישית|הרביעי|החמישי|הצעיר|הצעירה|היחיד|היחידה|הגדול|הגדולה|הקטן|הקטנה|הראשונה|הראשון))?"
 # "... בתו חנה " / "אחיו ר' משה " לפני ביטוי הקשר: השם הלא-מקושר הוא הנושא (pre חמדני – מילת הקשר הקרובה ביותר)
-_PRE_REL_NAME_RE = re.compile(r"(?P<pre>.*)(?<![א-ת])ו?[לבמ]?(?P<rel>" + _REL_WORDS + r")" + _ORD2 + r"\s*,?\s*(?:(?:היה|הייתה|היתה|הוא|היא)\s+)?"
-                              r"(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)(?P<n>" + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,3})\s*[,–\-:]?\s*$", re.S)
+_PRE_REL_NAME_RE = re.compile(r"(?P<pre>.*)(?<![א-ת])ו?[לבמ]?(?P<rel>" + _REL_WORDS + r")" + _ORD2 + r"(?!\s*של(?![א-ת]))\s*,?\s*(?:(?:היה|הייתה|היתה|הוא|היא)\s+)?"
+                              r"(?P<hon>(?:(?:" + _HON_ALT + r")\s+)*)(?P<n>" + NAME_WORD + r"(?:\s+" + NAME_WORD + r"){0,3})" + _VERB_TAIL + r"\s*[,–\-:]?\s*$", re.S)
 _REL_WORD_INFO = {   # מילת קשר → (סוג הקשר של השם אל הדף, מגדר השם)
     "בתו": ("child", "f"), "בנו": ("child", "m"), "בתה": ("child", "f"), "בנה": ("child", "m"), "בתם": ("child", "f"), "בנם": ("child", "m"),
     "אחיו": ("sibling", "m"), "אחותו": ("sibling", "f"), "אחיה": ("sibling", "m"), "אחותה": ("sibling", "f"),
@@ -290,6 +293,9 @@ class Extractor:
             out = [words[0]]
             for w in words[1:]:
                 bare = w.strip("(),.;:'\"")
+                if bare in NAME_INFIX:
+                    out.append(w)          # "ברוך יהודה סג"ל לנדא" – סג"ל/הכהן/הלוי באמצע השם
+                    continue
                 if bare in self.name_tokens or (bare not in self.common_words and bare not in NON_NAME_WORDS and len(bare) >= 3
                                                and not bare.startswith("ו")):
                     out.append(w)
@@ -351,6 +357,14 @@ class Extractor:
                     self._from_sentence(title, sentence, refs, info, add, in_family_section, sec_title, list_context)
                     self._gender_votes(sentence, info)
 
+        # לידה/פטירה מהקטגוריות ("אישים שנולדו בשנת תרצ"ז") – מדויק יותר מהטקסט
+        for cat in info["categories"]:
+            mc = re.match(r"אישים שנולדו בשנת\s+(.+)$", cat)
+            if mc and info["born"] is None:
+                info["born"] = mc.group(1).strip()
+            mc = re.match(r"אישים שנפטרו בשנת\s+(.+)$", cat)
+            if mc and info["died"] is None:
+                info["died"] = mc.group(1).strip()
         # לידה/פטירה מהטקסט אם לא נמצאו בתבנית
         if info["born"] is None:
             m = re.search(r"נולד(?:ה)?\s[^.\n]{0,80}?(?:בשנת\s+)?((?:ה')?ת[א-ת]{0,3}\"[א-ת]|1[5-9]\d\d|20\d\d)", wt.plain(body))
@@ -717,6 +731,11 @@ class Extractor:
             stripped = _TRAILING_CLAUSE_RE.sub(", ", before)
             if stripped != before:
                 subj = self._subject_in(stripped, m, page, chain_ok, word_gender)
+        if subj is None and before.rstrip().endswith("("):
+            # "ר' משה אורי בלויא, מנהיג תנועת אגודת ישראל (בנו של X)" – התיאור שבין השם לסוגריים אינו הנושא
+            stripped = _DESCRIPTOR_BEFORE_PAREN_RE.sub("", before)
+            if stripped != before:
+                subj = self._subject_in(stripped, m, page, chain_ok, word_gender)
         return subj if subj is not None else (page, True, None, wt.display_name(page))
 
     def _subject_in(self, before: str, m: re.Match, page: str, chain_ok: bool, word_gender: str | None):
@@ -731,7 +750,9 @@ class Extractor:
                 is_object = False      # "התחתן עם מרת [[X]], בתו של [[Y]]" – X היא הבת, לא הערך (שהוא גבר)
             target = wt.normalize_title(lm.group("t"))
             known = (not self.known) or target in self.known
-            if (not is_object or chain_ok) and wt.is_content_link(target) and (known or lm.group("hon")) and not _looks_like_year(target):
+            # שרשרת יוחסין: רק מושא של "בנו של"/"בת" קודם ("בנו של [[X]], בנו של [[Y]]"), לא "אמו של [[X]], הייתה בתו של"
+            chain_here = chain_ok and bool(re.search(r"(?<![א-ת])(?:בנו|בתו|בנם|בתם|בן|בת)\s+(?:של\s+)?$", pre))
+            if (not is_object or chain_here) and wt.is_content_link(target) and (known or lm.group("hon")) and not _looks_like_year(target):
                 return target, self._has_article(target), _gender_from_honorific(lm.group("hon") or ""), wt.display_name(target)
             return (page, True, None, page_disp) if is_object else None
         rm = _PRE_REL_NAME_RE.match(before)
@@ -1096,6 +1117,10 @@ def h_list_of_links(relation: str, direction: str, conf: float = 0.75, gender_fr
         rest = m.group("rest")
         if " של " in rest[:12]:
             return []
+        # "אחיו ר' [[X]] היה נשוי למרת חוה לאה, בת הרב [[Y]]" – הרשימה נגמרת בפועל; Y אינו אח
+        vm = re.search(r"(?<![א-ת])(?:היה|הייתה|היתה|היו|נשוי|נשואה|נישא|נישאה|התחתן|התחתנה|נשא|נולד|נולדה|נפטר|נפטרה|כיהן|שימש|למד|עלה|עבר|מכהן|משמש)(?![א-ת])", rest)
+        if vm:
+            rest = rest[:vm.start()]
         # "(בנו ר' [[X]])" – תיאור, לא פריט (גם כשיש קישור בתוכו); סוגריים בתוך קישור ("[[X (בן Y)]]") נשארים
         links_found = re.findall(r"\[\[[^\[\]]*\]\]", rest)
         for i, lk in enumerate(links_found):

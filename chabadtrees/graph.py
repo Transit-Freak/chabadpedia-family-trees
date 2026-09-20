@@ -129,6 +129,10 @@ def build_graph(pages: dict[str, dict], relations: list[dict], config: dict) -> 
     # --- מיזוג אנשים לא-מקושרים בעלי אותו שם שעוגניהם קרובים ---
     _merge_unlinked(persons, edges)
     _merge_unlinked_by_name(persons, edges, config.get("merge_by_name_max_surname_pages", 15))
+    _merge_unlinked(persons, edges)          # מיזוג לפי שם פותח משבצות חדשות ("משה אורי בלויא" = "משה אורי בלוי" → שני "ברוך יהודה")
+    # אחרי המיזוגים השרשראות מחוברות, ואפשר לראות ש"אביו" של הערך הוא בעצם צאצא שלו (נכד שקרוי על שם סבו)
+    _unresolve_conflicting_aliases(persons, edges)
+    _merge_unlinked(persons, edges)
 
     # --- ביטחון משולב (noisy-or) ואימות מצולב ---
     for e in edges.values():
@@ -192,7 +196,19 @@ def _surname_from_name(name: str) -> str:
 
 def _name_key(name: str) -> str:
     words = [w.strip("(),.;:'\"") for w in wt.normalize_quotes(name or "").replace("-", " ").split()]
-    return " ".join(w for w in words if w and w not in wt.HONORIFIC_WORDS and w not in wt.SUFFIX_WORDS)
+    words = [w for w in words if w and w not in wt.HONORIFIC_WORDS and w not in wt.SUFFIX_WORDS]
+    if len(words) >= 2:
+        words[-1] = _surname_norm(words[-1])
+    return " ".join(words)
+
+
+def _surname_norm(surname: str) -> str:
+    """כתיב יידי של שם משפחה: "בלויא" = "בלוי", "לנדא" נשאר (קצר מדי לקצץ)."""
+    if len(surname) >= 5 and surname.endswith("א") and not surname.endswith("יא"):
+        return surname[:-1]
+    if len(surname) >= 5 and surname.endswith("יא"):
+        return surname[:-1]
+    return surname
 
 
 def _given_part(name: str) -> str:
@@ -214,7 +230,13 @@ def _names_match(a: str, b: str) -> bool:
     # "אריה הרטמן" / "אריה אברהם הרטמן": אותו שם פרטי ראשון ואותו שם משפחה, שם אמצעי חסר באחד
     if len(wa) >= 2 and len(wb) >= 2 and wa[0] == wb[0] and wa[-1] == wb[-1] and (set(wa) <= set(wb) or set(wb) <= set(wa)):
         return True
-    return difflib.SequenceMatcher(None, a, b).ratio() >= 0.85
+    # שגיאת כתיב ("חי שרה"/"חיה שרה"): דמיון גבוה בשם כולו, וגם בחלק שלפני המילה האחרונה – שם משפחה ארוך משותף
+    # לא הופך את "משה לברטוב" ל"שלמה לברטוב"
+    if difflib.SequenceMatcher(None, a, b).ratio() < 0.85:
+        return False
+    if len(wa) >= 2 and len(wb) >= 2 and wa[-1] == wb[-1]:
+        return difflib.SequenceMatcher(None, " ".join(wa[:-1]), " ".join(wb[:-1])).ratio() >= 0.7
+    return True
 
 
 def _merge_unlinked(persons: dict, edges: dict) -> None:
@@ -306,15 +328,36 @@ def _unresolve_conflicting_aliases(persons: dict, edges: dict) -> None:
         children[b].append(a)
         if not alias_only(e) and gender(b) == "m":
             solid_fathers[a].add(b)
+    def descendants(pid: str, depth: int = 6) -> set[str]:
+        out, frontier = set(), {pid}
+        for _ in range(depth):
+            frontier = {c for q in frontier for c in children.get(q, [])} - out
+            if not frontier:
+                break
+            out |= frontier
+        return out
+
+    # קישור מפורש לערך הלא נכון ("אחיו ר' [[ברוך יהודה בלוי]]" – העורך קישר לנכד באותו שם): גם הוא מופרד, אבל רק
+    # כשהשנים לא מסתדרות בכלל; סתירת "אב אחר" נשמרת לפתרון-שם בלבד (קישור מפורש עדיף על שם)
     bad: set[tuple[str, str]] = set()          # (ערך, דף המקור של האזכור)
     for (a, b, rel), e in list(edges.items()):
-        if rel != "parent" or not alias_only(e):
+        if rel not in ("parent", "sibling") or e.get("inferred"):
             continue
+        weak = alias_only(e)
         pages = {ev["source_page"] for ev in e["evidence"]}
+        if rel == "sibling":
+            # אח שנפתר משם או קושר בטעות: "אחיו ר' ברוך יהודה בלוי" (יליד תרי"ז) ↔ הערך ברוך יהודה בלוי יליד תשל"ג
+            for art, other in ((a, b), (b, a)):
+                if not art.startswith("~") and persons[art].get("fetched") and born.get(art) and born.get(other) \
+                        and abs(born[art] - born[other]) > 45 and pages != {art}:
+                    bad.update((art, pg) for pg in pages)
+            continue
         for art in (a, b):
-            if art.startswith("~") or not persons[art].get("fetched"):
+            if art.startswith("~") or not persons[art].get("fetched") or pages == {art}:
                 continue
             conflict = False
+            if b in descendants(a):
+                conflict = True   # ה"אב" הוא צאצא של הילד – נכד שקרוי על שם סבו
             if art == b:          # הערך כהורה של a
                 if born[art] and born.get(a) and born[a] < born[art] + 12:
                     conflict = True
@@ -323,7 +366,7 @@ def _unresolve_conflicting_aliases(persons: dict, edges: dict) -> None:
                 if died[art] and born.get(a) and born[a] > died[art] + 1:
                     conflict = True
             else:                 # הערך כילד של b
-                if gender(b) == "m" and any(f != b for f in solid_fathers.get(art, ())):
+                if weak and gender(b) == "m" and any(f != b for f in solid_fathers.get(art, ())):
                     conflict = True
                 if born[art] and born.get(b) and born[art] < born[b] + 12:
                     conflict = True
@@ -334,11 +377,11 @@ def _unresolve_conflicting_aliases(persons: dict, edges: dict) -> None:
     for key in list(edges):
         a, b, rel = key
         e = edges.get(key)
-        if e is None or not alias_only(e):
+        if e is None or e.get("inferred"):
             continue
         pages = {ev["source_page"] for ev in e["evidence"]}
         for art in (a, b):
-            hits = [pg for pg in pages if (art, pg) in bad]
+            hits = [pg for pg in pages if (art, pg) in bad and pg != art]
             if not hits:
                 continue
             u = f"~{wt.display_name(art)}@{hits[0]}:alias"
@@ -385,21 +428,17 @@ def _apply_remap(persons: dict, edges: dict, remap: dict[str, str]) -> None:
 
 
 def _merge_unlinked_by_name(persons: dict, edges: dict, max_surname_pages: int = 15) -> None:
-    """מיזוג בין דפים לפי שם מלא: "בנו ר' שניאור זלמן הרטמן" בדף האב, ו"בתו רחל, אשת ר' שניאור זלמן הרטמן" בדף
-    חותנו – אותו אדם, אם השם המלא (שם פרטי + שם משפחה) מופיע בגרף בדיוק פעמיים בלי ערך: פעם כילד ופעם כבן זוג,
-    שניהם גברים (שם משפחה של אישה משתנה בנישואין), ושם המשפחה נדיר (עד max_surname_pages ערכים) – כדי לא לאחד
-    בני דודים שקרויים על שם אותו סב."""
-    surname_pages: Counter = Counter(p["surname"] for p in persons.values() if p.get("fetched") and p.get("surname"))
-    has_parent: set[str] = set()
-    has_spouse: set[str] = set()
-    parents_of: dict[str, set[str]] = defaultdict(set)
-    partners_of: dict[str, set[str]] = defaultdict(set)
-    children_of: dict[str, set[str]] = defaultdict(set)
-    for (a, b, rel), e in edges.items():
-        if rel == "parent":
-            has_parent.add(a); parents_of[a].add(b); children_of[b].add(a)
-        elif rel == "spouse":
-            has_spouse.add(a); has_spouse.add(b); partners_of[a].add(b); partners_of[b].add(a)
+    """מיזוג לפי שם, לגברים בעלי שם משפחה נדיר (עד max_surname_pages ערכים) שאינו שם פרטי.
+
+    שלב א – אזכור עם שם אמצעי → הערך בלי השם האמצעי: "הרב אפרים צבי לרר" → הערך "אפרים לרר" (ערך יחיד שמתאים, בלי
+    קשר ישיר, בלי אב אחר ובלי סתירת שנים); הראיות מסומנות כפתרון-שם.
+    שלב ב – שני אזכורים בלי ערך (או קישור אדום) עם אותו שם (גם עם שם אמצעי חסר או כתיב "בלויא"/"בלוי") שמופיע
+    בגרף בדיוק פעמיים – אותו אדם, אם אין סתירה: לא קשר ישיר, לא סב ונכד, לא שני אבות שונים."""
+    fetched = [p for pid, p in persons.items() if p.get("fetched") and not pid.startswith("~")]
+    surname_pages: Counter = Counter(_surname_norm(p["surname"]) for p in fetched if p.get("surname"))
+    given_names = {wt.display_name(pid).split()[0] for pid, p in persons.items() if p.get("fetched") and not pid.startswith("~") and wt.display_name(pid).split()}
+    born = {pid: _year(p.get("born")) for pid, p in persons.items()}
+
     def gender(pid: str) -> str | None:      # המגדר הסופי נקבע רק אחרי המיזוגים – כאן לפי ההצבעות עד כה
         v = persons[pid].get("gender_votes") or {}
         return "m" if v.get("m", 0) > v.get("f", 0) else "f" if v.get("f", 0) > v.get("m", 0) else persons[pid].get("gender")
@@ -413,64 +452,136 @@ def _merge_unlinked_by_name(persons: dict, edges: dict, max_surname_pages: int =
         """"אריה הרטמן" ⊂ "אריה אברהם הרטמן": אותו שם פרטי ראשון ואותו שם משפחה, ומילות האחד בתוך השני."""
         return a[0] == b[0] and a[-1] == b[-1] and (set(a) <= set(b) or set(b) <= set(a))
 
-    # קיבוץ לפי (שם פרטי ראשון, שם משפחה) – "אריה הרטמן" ו"אריה אברהם הרטמן" באותה קבוצה
-    groups: dict[tuple[str, str], list[str]] = defaultdict(list)
-    for pid, p in persons.items():
-        if not pid.startswith("~"):
-            continue
-        w = words_of(pid)
-        if len(w) < 2:
-            continue
-        groups[(w[0], w[-1])].append(pid)
-    remap: dict[str, str] = {}
-    for (first, surname), ids in groups.items():
-        if not 1 <= surname_pages.get(surname, 0) <= max_surname_pages:
-            continue
-        if len(ids) != 2 or not nested(words_of(ids[0]), words_of(ids[1])):
-            continue
-        child = [x for x in ids if x in has_parent and x not in has_spouse]
-        spouse = [x for x in ids if x in has_spouse and x not in has_parent]
-        if len(child) != 1 or len(spouse) != 1:
-            continue
-        c, sp = child[0], spouse[0]
-        gc, gs = gender(c), gender(sp)
-        # רק גברים: שם המשפחה של אישה משתנה בנישואין, ו"רחל מזל" בת של מזל ואשת מזל הן שתי נשים
-        if "f" in (gc, gs) or "m" not in (gc, gs):
-            continue
-        # "אשתו חיה שרה" ו"בתו חיה שרה" באותו בית – שתי נשים; בן זוג של ההורה או של אח אינו הילד
-        family = set(parents_of[c]) | {k for par in parents_of[c] for k in children_of[par]}
-        if partners_of[sp] & family:
-            continue
-        remap[sp] = c
-        persons[c]["flags"].append("מוזג לפי שם מלא")
-    _apply_remap(persons, edges, remap)
+    def maps():
+        parents_of: dict[str, set[str]] = defaultdict(set)
+        partners_of: dict[str, set[str]] = defaultdict(set)
+        children_of: dict[str, set[str]] = defaultdict(set)
+        neighbours: dict[str, set[str]] = defaultdict(set)
+        solid_fathers: dict[str, set[str]] = defaultdict(set)
+        for (a, b, rel), e in edges.items():
+            neighbours[a].add(b); neighbours[b].add(a)
+            if rel == "parent":
+                parents_of[a].add(b); children_of[b].add(a)
+                if gender(b) == "m" and not (e["evidence"] and all(ev.get("alias") for ev in e["evidence"])):
+                    solid_fathers[a].add(b)
+            elif rel == "spouse":
+                partners_of[a].add(b); partners_of[b].add(a)
+        return parents_of, partners_of, children_of, neighbours, solid_fathers
 
-    # אזכור לא-מקושר עם שם אמצעי → הערך בלי השם האמצעי: "הרב אפרים צבי לרר" → הערך "אפרים לרר" (גבר, שם משפחה נדיר,
-    # ערך יחיד שמתאים, ובלי קשר ישיר ביניהם שסותר זהות). הראיות מסומנות כפתרון-שם, כמו כינוי.
+    # ---- שלב א: אזכור לא-מקושר עם שם אמצעי → ערך ----
+    parents_of, partners_of, children_of, neighbours, solid_fathers = maps()
     by_first_last: dict[tuple[str, str], list[str]] = defaultdict(list)
     for pid, p in persons.items():
         if p.get("fetched") and not pid.startswith("~"):
             w = words_of(pid)
             if len(w) >= 2:
                 by_first_last[(w[0], w[-1])].append(pid)
-    remap = {}
-    neighbours: dict[str, set[str]] = defaultdict(set)
-    for (a, b, rel) in edges:
-        neighbours[a].add(b); neighbours[b].add(a)
-    for pid, p in list(persons.items()):
-        if not pid.startswith("~") or gender(pid) != "m":
+    def est_born(pid: str, depth: int = 2) -> int | None:
+        """שנת לידה משוערת: של האדם, ואם אין – של בן זוגו, או ילד פחות 25, או הורה ועוד 25 (עד שתי רמות)."""
+        if born.get(pid):
+            return born[pid]
+        if depth <= 0:
+            return None
+        for sp in partners_of.get(pid, ()):
+            if born.get(sp):
+                return born[sp]
+        kids = [y for y in (est_born(c, depth - 1) for c in children_of.get(pid, ())) if y]
+        if kids:
+            return min(kids) - 25
+        pars = [y for y in (est_born(q, depth - 1) for q in parents_of.get(pid, ())) if y]
+        if pars:
+            return max(pars) + 25
+        return None
+
+    def conflicts_with_article(pid: str, art: str) -> bool:
+        my_fathers = {q for q in parents_of.get(pid, ()) if gender(q) == "m"}
+        if art in neighbours[pid]:
+            return True
+        if my_fathers and solid_fathers.get(art) and not (my_fathers & solid_fathers[art]):
+            return True                       # אב אחר
+        if born.get(art) and any((born.get(c) or 9999) < born[art] + 12 for c in children_of.get(pid, ())):
+            return True                       # ילד שנולד לפני הערך
+        if children_of[pid] & parents_of[art] or children_of[art] & parents_of[pid]:
+            return True                       # סב ונכד
+        ea, ep = est_born(art), est_born(pid)
+        return bool(ea and ep and abs(ea - ep) > 30)
+
+    # כל האזכורים באותו שם מלא נבחנים יחד: אזכור שסותר את הערך (בן של בן הערך – נכד שקרוי על שם סבו; אב אחר) הוא
+    # אדם אחר, ואזכור בלי סתירה מתמזג לערך רק אם הוא רחוק בשנים מאותו אדם אחר – אחרת השם דו-משמעי ונשארים בלי מיזוג
+    same_name: dict[tuple[str, ...], list[str]] = defaultdict(list)
+    for pid in persons:
+        if pid.startswith("~") and gender(pid) == "m":
+            w = words_of(pid)
+            if len(w) >= 3 and w[-1] not in given_names:
+                same_name[tuple(w)].append(pid)
+    remap: dict[str, str] = {}
+    for w, pids in same_name.items():
+        if not 1 <= surname_pages.get(w[-1], 0) <= max_surname_pages:
+            continue
+        cands = {k for k in by_first_last.get((w[0], w[-1]), []) if set(words_of(k)) < set(w)}
+        if len(cands) != 1:
+            continue
+        art = next(iter(cands))
+        others = [pid for pid in pids if conflicts_with_article(pid, art)]
+        for pid in pids:
+            if pid in others:
+                continue
+            ep = est_born(pid)
+            ambiguous = any(not (ep and est_born(o) and abs(ep - est_born(o)) > 30) for o in others)
+            if ambiguous:
+                continue
+            remap[pid] = art
+            for (a, b, rel), e in edges.items():
+                if pid in (a, b):
+                    for ev in e["evidence"]:
+                        ev["alias"] = True
+    _apply_remap(persons, edges, remap)
+
+    # ---- שלב ב: שני אזכורים בלי ערך (או קישור אדום) עם אותו שם ----
+    parents_of, partners_of, children_of, neighbours, solid_fathers = maps()
+
+    def fathers(pid: str) -> set[str]:
+        return {q for q in parents_of.get(pid, ()) if gender(q) == "m"}
+
+    def conflict(x: str, y: str) -> bool:
+        if y in neighbours[x]:
+            return True
+        # סב ונכד: x הורה של מישהו ש-y ילד שלו (או להפך)
+        if children_of[x] & parents_of[y] or children_of[y] & parents_of[x]:
+            return True
+        if children_of[x] & children_of[y]:
+            return False                      # אותם ילדים – בוודאי אותו אדם
+        fx, fy = fathers(x), fathers(y)
+        if fx and fy and not (fx & fy):
+            return True                      # שני אבות שונים
+        return False
+
+    groups: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for pid, p in persons.items():
+        if not (pid.startswith("~") or not p.get("fetched")):
             continue
         w = words_of(pid)
-        if len(w) < 3:
+        if len(w) < 2:
             continue
-        cands = [k for k in by_first_last.get((w[0], w[-1]), []) if set(words_of(k)) < set(w) and k not in neighbours[pid]]
-        if len(cands) != 1 or not 1 <= surname_pages.get(w[-1], 0) <= max_surname_pages:
+        groups[(w[0], w[-1])].append(pid)
+    remap = {}
+    for (first, surname), ids in groups.items():
+        if surname in given_names or not 1 <= surname_pages.get(surname, 0) <= max_surname_pages:
             continue
-        remap[pid] = cands[0]
-        for (a, b, rel), e in edges.items():
-            if pid in (a, b):
-                for ev in e["evidence"]:
-                    ev["alias"] = True
+        if len(ids) != 2 or not nested(words_of(ids[0]), words_of(ids[1])):
+            continue
+        x, y = ids
+        gx, gy = gender(x), gender(y)
+        if "f" in (gx, gy) or "m" not in (gx, gy):
+            continue
+        if conflict(x, y):
+            continue
+        # הנציג: קישור אדום לפני אזכור, ואז השם הארוך יותר, ואז מי שיש לו הורה
+        def rank(pid: str):
+            return (0 if not pid.startswith("~") else 1, -len(words_of(pid)), 0 if pid in parents_of else 1, pid)
+        keep, drop = sorted((x, y), key=rank)
+        remap[drop] = keep
+        persons[keep]["flags"].append("מוזג לפי שם מלא")
     _apply_remap(persons, edges, remap)
 
 
@@ -631,6 +742,13 @@ def _consistency(persons: dict, edges: dict) -> None:
                 if e not in solid:
                     e["flags"].append("אב לפי פתרון שם מול אב מפורש")
                     e["confidence"] = min(e["confidence"], 0.3)
+    # אחים רחוקים בשנים – קישור לנכד או לסב באותו שם
+    for e in edges.values():
+        if e["relation"] == "sibling" and e["confidence"] >= 0.5:
+            ya, yb = _year(persons[e["a"]]["born"]), _year(persons[e["b"]]["born"])
+            if ya and yb and abs(ya - yb) > 45:
+                e["flags"].append("אחים רחוקים בשנים")
+                e["confidence"] = min(e["confidence"], 0.3)
     # נכד שנולד לפני ה"סב" – ההורה בעץ הוא בן דוד או נכד באותו שם
     kids_of: dict[str, list[str]] = defaultdict(list)
     for e in edges.values():
