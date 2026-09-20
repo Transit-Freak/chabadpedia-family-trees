@@ -22,6 +22,9 @@ on:
       png:
         description: "צילומי PNG לכל העצים (איטי: כ-3 שניות לעץ, 700+ עצים). התצוגה המקדימה ב-HTML נוצרת תמיד"
         default: "false"
+      refresh:
+        description: "למשוך מחדש את כל הדפים (בלי זה נמשכים רק דפים חדשים ודפים שנערכו מאז הריצה הקודמת)"
+        default: "false"
 
 permissions:
   contents: write
@@ -67,7 +70,9 @@ jobs:
           if [ -n "${{ inputs.categories }}" ]; then CATS=(--categories "${{ inputs.categories }}"); fi
           PNG=""
           if [ "${{ inputs.png }}" = "true" ]; then PNG="--png"; fi
-          python -m chabadtrees all $PNG --retry-sleep 60 $LIMIT "${CATS[@]}" 2>&1 | tee run.log || echo "exit code: $?" | tee -a run.log
+          REFRESH=""
+          if [ "${{ inputs.refresh }}" = "true" ]; then REFRESH="--refresh"; fi
+          python -m chabadtrees all $PNG $REFRESH --retry-sleep 60 $LIMIT "${CATS[@]}" 2>&1 | tee run.log || echo "exit code: $?" | tee -a run.log
 
       - name: בנייה מחדש מהמטמון
         if: inputs.mode == 'render'

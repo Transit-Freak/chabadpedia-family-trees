@@ -100,6 +100,29 @@ def collect_person_titles(client: MediaWikiClient, cfg: dict, store: Store) -> l
 
 
 # --------------------------------------------------------------------------- משיכת דפים
+def changed_since_last_fetch(client: MediaWikiClient, state: dict, pages: dict, titles: list[str]) -> list[str]:
+    """כותרות (מרחב ראשי) שנערכו מאז המשיכה הקודמת: דפים שבמטמון – למשיכה מחדש; דפים חדשים – מצטרפים לרשימה."""
+    # מאז מתי? מאז הבדיקה הקודמת של השינויים, ואם לא הייתה – מאז הדף הישן ביותר במטמון
+    fetched_at = [p.get("fetched_at") for p in pages.values() if p.get("fetched_at")]
+    since = state.get("changes_checked_until") or (min(fetched_at) if fetched_at else None)
+    if not since or not pages:
+        return []
+    started = now()
+    try:
+        t0 = dt.datetime.fromisoformat(since.replace("Z", "+00:00")) - dt.timedelta(hours=2)   # מרווח ביטחון
+        since_api = t0.astimezone(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        changed = list(client.recent_changes(since_api))
+    except Exception as exc:  # noqa: BLE001 – בלי "שינויים אחרונים" ממשיכים עם המטמון
+        log.warning("לא הצלחתי לקרוא את השינויים האחרונים (%s) – משתמשים במטמון כמו שהוא", exc)
+        return []
+    state["changes_checked_until"] = started
+    known = set(titles) | set(pages)
+    out = [t for t in changed if t in known]
+    new = [t for t in changed if t not in known and ":" not in t]
+    log.info("שינויים באתר מאז %s: %d דפים במטמון נערכו, %d דפים חדשים", since, len(out), len(new))
+    return out + new
+
+
 def fetch_pages(client: MediaWikiClient, cfg: dict, store: Store, refresh: bool = False, limit: int | None = None,
                 titles: list[str] | None = None, retry_sleep: float = 30.0) -> dict:
     state = store.load("fetch_state.json", {})
@@ -120,7 +143,16 @@ def fetch_pages(client: MediaWikiClient, cfg: dict, store: Store, refresh: bool 
     # כשלים מריצה קודמת נכנסים ראשונים לתור
     pending = [t for t in failed if t in titles or True]
     pending += [t for t in titles if t not in pending and (refresh or (t not in pages and t not in missing))]
-    log.info("למשיכה: %d דפים (%d כשלים קודמים), %d כבר במטמון", len(pending), len(failed), len(pages))
+    # דפים שנערכו באתר מאז המשיכה הקודמת נמשכים מחדש (וגם דפים חדשים – סיווג "אישים" ייעשה בחילוץ)
+    changed = changed_since_last_fetch(client, state, pages, titles) if not refresh else []
+    for t in changed:
+        if t not in pending:
+            pending.append(t)
+        if t not in titles:
+            titles.append(t)
+    if changed:
+        state["titles"] = titles
+    log.info("למשיכה: %d דפים (%d כשלים קודמים, %d שהשתנו באתר), %d כבר במטמון", len(pending), len(failed), len(changed), len(pages))
 
     def run_pass(queue: list[str], label: str) -> list[str]:
         still: list[str] = []

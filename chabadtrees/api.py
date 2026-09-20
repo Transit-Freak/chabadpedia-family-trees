@@ -143,6 +143,18 @@ class MediaWikiClient:
             for item in chunk.get("categorymembers", []):
                 yield item
 
+    def recent_changes(self, since: str, namespace: str = "0"):
+        """כותרות שנערכו או נוצרו מאז since (ISO 8601), במרחב השמות הנתון – כדי למשוך מחדש רק מה שהשתנה."""
+        params = {"list": "recentchanges", "rcstart": since, "rcdir": "newer", "rcnamespace": namespace,
+                  "rctype": "edit|new", "rcprop": "title", "rclimit": "max"}
+        seen: set[str] = set()
+        for chunk in self.query(params):
+            for item in chunk.get("recentchanges", []):
+                t = item.get("title")
+                if t and t not in seen:
+                    seen.add(t)
+                    yield t
+
     def embedded_in(self, template: str, namespaces: str = "0|10|2"):
         title = template if ":" in template else "תבנית:" + template
         params = {"list": "embeddedin", "eititle": title, "eilimit": "max", "einamespace": namespaces}

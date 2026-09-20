@@ -318,26 +318,39 @@ def _merge_unlinked_by_name(persons: dict, edges: dict, max_surname_pages: int =
             has_parent.add(a); parents_of[a].add(b); children_of[b].add(a)
         elif rel == "spouse":
             has_spouse.add(a); has_spouse.add(b); partners_of[a].add(b); partners_of[b].add(a)
-    groups: dict[str, list[str]] = defaultdict(list)
+    def gender(pid: str) -> str | None:      # המגדר הסופי נקבע רק אחרי המיזוגים – כאן לפי ההצבעות עד כה
+        v = persons[pid].get("gender_votes") or {}
+        return "m" if v.get("m", 0) > v.get("f", 0) else "f" if v.get("f", 0) > v.get("m", 0) else persons[pid].get("gender")
+
+    def words_of(pid: str) -> list[str]:
+        p = persons[pid]
+        name = p["name"] if pid.startswith("~") else wt.display_name(pid)
+        return _name_key(_given_part(name)).split()
+
+    def nested(a: list[str], b: list[str]) -> bool:
+        """"אריה הרטמן" ⊂ "אריה אברהם הרטמן": אותו שם פרטי ראשון ואותו שם משפחה, ומילות האחד בתוך השני."""
+        return a[0] == b[0] and a[-1] == b[-1] and (set(a) <= set(b) or set(b) <= set(a))
+
+    # קיבוץ לפי (שם פרטי ראשון, שם משפחה) – "אריה הרטמן" ו"אריה אברהם הרטמן" באותה קבוצה
+    groups: dict[tuple[str, str], list[str]] = defaultdict(list)
     for pid, p in persons.items():
         if not pid.startswith("~"):
             continue
-        key = _name_key(_given_part(p["name"]))
-        if len(key.split()) < 2:
+        w = words_of(pid)
+        if len(w) < 2:
             continue
-        groups[key].append(pid)
+        groups[(w[0], w[-1])].append(pid)
     remap: dict[str, str] = {}
-    for key, ids in groups.items():
-        if len(ids) != 2:
+    for (first, surname), ids in groups.items():
+        if not 1 <= surname_pages.get(surname, 0) <= max_surname_pages:
+            continue
+        if len(ids) != 2 or not nested(words_of(ids[0]), words_of(ids[1])):
             continue
         child = [x for x in ids if x in has_parent and x not in has_spouse]
         spouse = [x for x in ids if x in has_spouse and x not in has_parent]
         if len(child) != 1 or len(spouse) != 1:
             continue
         c, sp = child[0], spouse[0]
-        def gender(pid: str) -> str | None:      # המגדר הסופי נקבע רק אחרי המיזוגים – כאן לפי ההצבעות עד כה
-            v = persons[pid].get("gender_votes") or {}
-            return "m" if v.get("m", 0) > v.get("f", 0) else "f" if v.get("f", 0) > v.get("m", 0) else persons[pid].get("gender")
         gc, gs = gender(c), gender(sp)
         # רק גברים: שם המשפחה של אישה משתנה בנישואין, ו"רחל מזל" בת של מזל ואשת מזל הן שתי נשים
         if "f" in (gc, gs) or "m" not in (gc, gs):
@@ -346,11 +359,36 @@ def _merge_unlinked_by_name(persons: dict, edges: dict, max_surname_pages: int =
         family = set(parents_of[c]) | {k for par in parents_of[c] for k in children_of[par]}
         if partners_of[sp] & family:
             continue
-        surname = _surname_from_name(persons[c]["name"]) or _surname_from_name(persons[sp]["name"])
-        if not surname or not 1 <= surname_pages.get(surname, 0) <= max_surname_pages:
-            continue
         remap[sp] = c
         persons[c]["flags"].append("מוזג לפי שם מלא")
+    _apply_remap(persons, edges, remap)
+
+    # אזכור לא-מקושר עם שם אמצעי → הערך בלי השם האמצעי: "הרב אפרים צבי לרר" → הערך "אפרים לרר" (גבר, שם משפחה נדיר,
+    # ערך יחיד שמתאים, ובלי קשר ישיר ביניהם שסותר זהות). הראיות מסומנות כפתרון-שם, כמו כינוי.
+    by_first_last: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for pid, p in persons.items():
+        if p.get("fetched") and not pid.startswith("~"):
+            w = words_of(pid)
+            if len(w) >= 2:
+                by_first_last[(w[0], w[-1])].append(pid)
+    remap = {}
+    neighbours: dict[str, set[str]] = defaultdict(set)
+    for (a, b, rel) in edges:
+        neighbours[a].add(b); neighbours[b].add(a)
+    for pid, p in list(persons.items()):
+        if not pid.startswith("~") or gender(pid) != "m":
+            continue
+        w = words_of(pid)
+        if len(w) < 3:
+            continue
+        cands = [k for k in by_first_last.get((w[0], w[-1]), []) if set(words_of(k)) < set(w) and k not in neighbours[pid]]
+        if len(cands) != 1 or not 1 <= surname_pages.get(w[-1], 0) <= max_surname_pages:
+            continue
+        remap[pid] = cands[0]
+        for (a, b, rel), e in edges.items():
+            if pid in (a, b):
+                for ev in e["evidence"]:
+                    ev["alias"] = True
     _apply_remap(persons, edges, remap)
 
 

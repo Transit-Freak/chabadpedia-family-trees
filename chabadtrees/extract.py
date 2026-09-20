@@ -235,6 +235,7 @@ class Extractor:
         # לקסיקון של מילות-שם מכל כותרות הערכים ("מנחם", "מענדל", "וילהלם"...): שם לא-מקושר נגזר במילה שאינה שם
         self.name_tokens: set[str] = set()       # כל מילות השמות בכותרות
         self.given_tokens: set[str] = set()      # המילה הראשונה בשם (שם פרטי)
+        self.surname_tokens: set[str] = set()    # המילה האחרונה בשם של שתי מילים ומעלה (שם משפחה)
         if self.strict_persons:
             for t in self.known:
                 words = [w.strip("(),.;:'\"") for w in wt.normalize_quotes(wt.display_name(t)).replace("-", " ").split()]
@@ -244,6 +245,9 @@ class Extractor:
                 self.name_tokens.update(words)
                 if words:
                     self.given_tokens.add(words[0])
+                if len(words) >= 2:
+                    self.surname_tokens.add(words[-1])
+            self.surname_tokens -= self.given_tokens
         # מילים שכיחות בקורפוס שאינן מילות-שם (פעלים, שמות עצם) – עוצרות שם לא-מקושר; מילה נדירה אחרי שם היא כנראה שם משפחה
         self.common_words: set[str] = set(common_words or ())
         self._pending: list[Relation] = []
@@ -274,6 +278,9 @@ class Extractor:
             if first not in self.given_tokens:
                 if first in self.name_tokens and second in self.name_tokens:
                     pass      # "זיסל חנה" – מילה שמוכרת רק כשם משפחה, אבל אחריה שם
+                elif second in self.surname_tokens and len(first) >= 3 and first not in self.common_words \
+                        and first not in NON_NAME_WORDS and first not in STOPWORDS and not first.startswith("ו"):
+                    pass      # "מתיה לרר" – שם פרטי שלא מופיע בכותרות, אבל אחריו שם משפחה מוכר
                 elif not honorific or first in self.common_words or first.startswith(("מ", "ו")) or len(first) < 3 or first in NON_NAME_WORDS:
                     # מילה לא מוכרת: מתקבלת רק אחרי תואר ("הרב עמיחי"), ולא אם היא נראית כמקום ("מנדבורנא") או מילה שכיחה
                     return ""
